@@ -21,13 +21,13 @@ Administrator accounts live in the MongoDB `users` collection, with salted scryp
 ## Features
 
 - Overview with real content counts, recent activity and shortcuts.
-- Journal search and filters; article creation, editing, previews, drafting and publishing; editable headings/text sections with reordering; categories and unique URL slugs.
+- Journal search and filters; article creation, editing, previews, drafting and publishing; visual rich-text blog editing with headings, bold/italic/underline, lists, quotes, links, alignment, and undo/redo; categories and unique URL slugs.
 - Separate draft and published copies. Saving a draft never changes public content. Archive/unpublish removes public content; restoring returns an article to drafts.
-- Editors for clinic/contact details, homepage headline and hero, founder introduction, seven services, FAQs and first-visit steps. Service IDs/categories remain fixed to preserve existing links and filters.
+- Service editor with Add service, category/icon selection, two image pickers and text limits. Existing IDs remain unchanged, and each added service receives a stable unique ID. Up to 50 services are supported; categories follow the website filters. The Home hero editor has been removed.
 - Media library and image picker. JPEG/PNG/WebP originals up to 20 MB and 40 megapixels are resized in the browser before upload. The backend validates and stores only WebP images, at most 1920 pixels on the longest edge and 512 KB, using quality 80 and further resizing when needed. Transparency and orientation are preserved; metadata is stripped. Images are public assets; avoid uploading confidential material.
 - Password changes, session invalidation, unsaved-change warnings and revision checks to prevent stale editors overwriting another editor's changes.
 
-The initial import includes the six articles and all current clinic/services content from the public website. Text is rendered safely through React, without arbitrary HTML. A missing blog cover uses the existing default image. Empty homepage/service image URLs are rejected.
+The initial import includes the six articles and all current clinic/services content from the public website. Blog bodies are validated structured rich text and rendered safely through React, without arbitrary HTML. Existing section-based blogs open in the visual editor without a database migration. A missing blog cover uses the existing default image. Empty homepage/service image URLs are rejected.
 
 ## Public website connection
 
@@ -148,4 +148,25 @@ Admin login reads MongoDB only. No local credential file is used. Seed content r
 
 Browser tests use Edge on Windows; elsewhere run `npx playwright install chromium`. They require the sibling `../agai` checkout and free ports 5002, 5178 and 5190. Development uses 5001/5177. Test content is isolated from `agai_cms`.
 
-Current scope is one administrator role, plain-text article sections, and manual website deployment. There is no email password recovery, publishing scheduler or automatic deploy trigger. Media is retained to avoid breaking existing references.
+Current scope is one administrator role, rich-text blog bodies, and manual website deployment. There is no email password recovery, publishing scheduler or automatic deploy trigger. Media is retained to avoid breaking existing references.
+
+The matching public-site rich-text renderer is in `../agai/src/components/RichText.tsx`. Deploy both repositories to display new formatting publicly. The API retains plain-text `sections` for older consumers. Rich-text bodies allow up to 100,000 characters and 12 levels of nesting. Formatting CSS is kept in sync between the admin preview and public renderer.
+
+## Adding a service
+
+Open **Website content ? Add service**. Fill in the title, short title, introduction, description, audience and care focus (1?8 lines), choose a category/icon, and select both the service image and homepage preview image. Text fields show their character limits. **Cancel new service** discards the unsaved entry; save a complete draft before starting another.
+
+**Save draft** stores the service privately in MongoDB. **Publish changes** publishes only the services draft with revision checks to prevent overwriting another editor's changes. Other website content drafts remain private. Published services appear on the connected website's homepage, Services page, category filters and appointment selector on the next page load. Existing service links remain valid. Deploy both repositories to ship the new dashboard/API validation and updated frontend service-count wording.
+
+## Services API and state
+
+MongoDB is the source of truth: `content` / `_id: main` contains `draft.services` and `published.services`. The existing setup script imports all starting services only when initializing the record; existing installations need no migration or reseeding. Snapshots in the website are generated fallbacks for prerendering and outages, not a second editable database.
+
+- `GET /api/public/services`: published services, schema version and publication time; public CORS and no-store caching.
+- `GET /api/services`: authenticated service drafts, published services and revision.
+- `PUT /api/services`: authenticated, CSRF-protected save with `{ revision, data: [...] }`. Supports new and edited services together, validates data, and returns 409 on stale revisions.
+- `POST /api/services/publish`: authenticated, CSRF-protected publish with `{ revision }`; updates only published services.
+
+The dashboard uses `ServicesContext` for API state, loading/retry and saves. The website uses its own typed `ServicesContext`: one shared request feeds homepage cards, service listings, filters, appointment choices, footer and chat service data. It keeps the previous data while loading, validates API responses, cancels superseded requests and offers retry on failure. New appointment links remain selected when services arrive after initial rendering.
+
+Deploy the admin/backend first, then the website: the website build now requires `/api/public/services` as well as `/api/public/content` when `CMS_API_URL` is configured. No new environment variables or paid services are required.

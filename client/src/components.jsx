@@ -11,7 +11,7 @@ export function useResource(path) {
   useEffect(() => {
     const controller = new AbortController()
     setData(null); setError('')
-    api(path, { signal: controller.signal }).then(setData).catch(error => { if (error.name !== 'AbortError') setError(error.message) })
+    api(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) }).then(value => { if (!controller.signal.aborted) setData(value) }).catch(error => { if (!controller.signal.aborted) setError(error.name === 'TimeoutError' ? 'Loading took too long. Please try again.' : error.message) })
     return () => controller.abort()
   }, [path, version])
   return { data, setData, error, reload: useCallback(() => setVersion(value => value + 1), []) }

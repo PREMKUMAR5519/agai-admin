@@ -10,7 +10,7 @@ import WebsiteContent from './pages/WebsiteContent'
 import Media from './pages/Media'
 import SettingsPage from './pages/Settings'
 
-const navigation = [{ to: '/', label: 'Overview', icon: LayoutDashboard, end: true }, { to: '/journal', label: 'Journal', icon: BookOpen }, { to: '/content', label: 'Website content', icon: FileText }, { to: '/media', label: 'Media library', icon: Image }]
+const navigation = [{ to: '/', label: 'Overview', icon: LayoutDashboard, end: true }, { to: '/journal', label: 'Blogs', icon: BookOpen }, { to: '/content', label: 'Website content', icon: FileText, end: true }, { to: '/media', label: 'Media library', icon: Image }]
 function Login({ onLogin }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)

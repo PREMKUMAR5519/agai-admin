@@ -10,11 +10,46 @@ import { connectDatabase } from '../src/db.js'
 import { createApp } from '../src/app.js'
 import { checkPassword, hashPassword } from '../src/security.js'
 import { config, root } from '../src/config.js'
+import { articleSchema, contentSchema } from '../src/schema.js'
 
 const databaseName = `agai_cms_test_${Date.now()}`
 const password = 'Test-only-password-2026!'
 let client, db, app, agent, csrf, post
 const seed = JSON.parse(readFileSync(resolve(root, 'seed/content.json'), 'utf8'))
+
+test('additional services require valid unique IDs, categories and complete content', () => {
+  const data = structuredClone(seed.content)
+  const additional = { ...data.services[0], id: 'movement-coaching' }
+  data.services.push(additional)
+  assert.equal(contentSchema.safeParse(data).success, true)
+  for (const invalid of [
+    { id: data.services[0].id }, { id: '../unsafe' }, { id: 'not-sure' },
+    { category: 'unknown' }, { icon: 'script' }, { title: '' }, { image: '' }, { focus: [] },
+  ]) {
+    data.services[data.services.length - 1] = { ...additional, ...invalid }
+    assert.equal(contentSchema.safeParse(data).success, false)
+  }
+  data.services = Array.from({ length: 51 }, (_, index) => ({ ...additional, id: `service-${index}` }))
+  assert.equal(contentSchema.safeParse(data).success, false)
+})
+
+test('rich blog documents preserve formatting and reject unsafe or empty content', () => {
+  const draft = { ...seed.articles[0], sections: [], body: { type: 'doc', content: [
+    { type: 'heading', attrs: { level: 2, textAlign: 'center', onclick: 'alert(1)' }, content: [{ type: 'text', text: 'A heading' }] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'Formatted words', marks: [{ type: 'bold' }, { type: 'link', attrs: { href: 'https://example.com' } }] }] },
+  ] } }
+  const parsed = articleSchema.parse(draft)
+  assert.equal(parsed.body.content[0].attrs.textAlign, 'center')
+  assert.equal(parsed.body.content[0].attrs.onclick, undefined)
+  assert.equal(parsed.body.content[1].content[0].marks[0].type, 'bold')
+  assert.match(parsed.sections[0].text, /Formatted words/)
+  const unsafe = structuredClone(draft)
+  unsafe.body.content[1].content[0].marks[1].attrs.href = 'javascript:alert(1)'
+  assert.equal(articleSchema.safeParse(unsafe).success, false)
+  assert.equal(articleSchema.safeParse({ ...draft, body: { type: 'doc', content: [{ type: 'script' }] } }).success, false)
+  assert.equal(articleSchema.safeParse({ ...draft, body: { type: 'doc', content: [{ type: 'paragraph' }] } }).success, false)
+  assert.equal(articleSchema.safeParse(seed.articles[0]).success, true)
+})
 before(async () => {
   ;({ client, db } = await connectDatabase(databaseName))
   await db.collection('users').insertOne({ email: 'test@example.com', name: 'Test editor', passwordHash: await hashPassword(password), authVersion: 1 })
@@ -82,6 +117,51 @@ test('website content is validated and only changes publicly on publish', async 
   draft.clinic.mapsEmbedUrl = 'https://untrusted.example/embed'
   await agent.put('/api/content').set('X-CSRF-Token', csrf).send({ revision: 1, data: draft }).expect(400)
 })
+test('new services stay private until published and persist alongside existing services', async () => {
+  const original = (await request(app).get('/api/public/content').expect(200)).body.content.services
+  const record = (await agent.get('/api/content').expect(200)).body
+  const data = structuredClone(record.draft)
+  const additional = { ...data.services[0], id: 'movement-coaching', title: 'Movement coaching' }
+  data.services.push(additional)
+  const saved = (await agent.put('/api/content').set('X-CSRF-Token', csrf).send({ revision: record.revision, data }).expect(200)).body
+  assert.deepEqual((await request(app).get('/api/public/content')).body.content.services, original)
+  assert.equal((await agent.get('/api/content')).body.draft.services.at(-1).id, additional.id)
+  await agent.post('/api/content/publish').set('X-CSRF-Token', csrf).send({ revision: saved.revision }).expect(200)
+  const published = (await request(app).get('/api/public/content')).body.content.services
+  assert.deepEqual(published.slice(0, -1), original)
+  assert.equal(published.at(-1).title, additional.title)
+})
+
+test('dedicated services API protects drafts, persists in MongoDB and isolates other content', async () => {
+  await request(app).get('/api/services').expect(401)
+  const before = (await request(app).get('/api/public/content')).body.content
+  const content = (await agent.get('/api/content')).body
+  const draft = structuredClone(content.draft)
+  draft.home.featureTitle = 'Unpublished home change'
+  await agent.put('/api/content').set('X-CSRF-Token', csrf).send({ revision: content.revision, data: draft }).expect(200)
+  const record = (await agent.get('/api/services').expect(200)).body
+  assert.equal(record.draft.home, undefined)
+  const services = structuredClone(record.draft.services)
+  services[0].title = 'Updated through services API'
+  await agent.put('/api/services').send({ revision: record.revision, data: services }).expect(403)
+  await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: record.revision, data: [...services, services[0]] }).expect(400)
+  const saved = (await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: record.revision, data: services }).expect(200)).body
+  await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: record.revision, data: services }).expect(409)
+  await agent.post('/api/services/publish').set('X-CSRF-Token', csrf).send({ revision: record.revision }).expect(409)
+  const privateResult = await request(app).get('/api/public/services').expect(200)
+  assert.equal(privateResult.headers['access-control-allow-origin'], '*')
+  assert.equal(privateResult.headers['cache-control'], 'no-store')
+  assert.deepEqual(privateResult.body.services, before.services)
+  assert.equal(privateResult.body.draft, undefined)
+  await agent.post('/api/services/publish').set('X-CSRF-Token', csrf).send({ revision: saved.revision }).expect(200)
+  const publicContent = (await request(app).get('/api/public/content')).body.content
+  assert.deepEqual(publicContent.home, before.home)
+  assert.equal((await db.collection('content').findOne({ _id: 'main' })).draft.home.featureTitle, draft.home.featureTitle)
+  const coldApp = createApp({ db, client, sessionStore: new session.MemoryStore() })
+  const reloaded = (await request(coldApp).get('/api/public/services').expect(200)).body
+  assert.deepEqual(reloaded.services, services)
+})
+
 test('uploads decode real images and reject disguised files', async () => {
   await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', Buffer.from('<script>alert(1)</script>'), { filename: 'fake.jpg', contentType: 'image/jpeg' }).expect(400)
   const buffer = await sharp({ create: { width: 10, height: 10, channels: 3, background: '#0756aa' } }).png().toBuffer()

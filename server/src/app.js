@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { config, root, clientRoot } from './config.js'
 import { checkPassword, hashPassword, csrfToken } from './security.js'
-import { articleSchema, contentSchema, editSchema, loginSchema, passwordSchema } from './schema.js'
+import { articleSchema, contentSchema, servicesSchema, editSchema, loginSchema, passwordSchema } from './schema.js'
 
 const fail = (status, message) => Object.assign(new Error(message), { status })
 const id = value => {
@@ -43,6 +43,11 @@ export function createApp({ db, client, sessionStore } = {}) {
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Cache-Control', 'no-store')
     next()
+  })
+  app.get('/api/public/services', async (_req, res) => {
+    const content = await db.collection('content').findOne({ _id: 'main' }, { projection: { 'published.services': 1, publishedAt: 1 } })
+    if (!content?.published?.services) throw fail(503, 'Services have not been initialized. Run npm run setup.')
+    res.json({ schemaVersion: 1, services: content.published.services, publishedAt: content.publishedAt })
   })
   app.get('/api/public/content', async (_req, res) => {
     const [content, posts] = await Promise.all([
@@ -162,6 +167,38 @@ export function createApp({ db, client, sessionStore } = {}) {
     if (!post) throw fail(409, 'Article changed. Reload before continuing.')
     await activity(req, ({ publish: 'Published', unpublish: 'Unpublished', archive: 'Archived', restore: 'Restored' })[action], post.draft.title)
     res.json(post)
+  })
+  // One MongoDB record remains canonical for both legacy content and service APIs.
+  const serviceRecord = content => ({
+    draft: { services: content.draft.services }, published: { services: content.published?.services || [] },
+    revision: content.revision,
+    publishedRevision: JSON.stringify(content.draft.services) === JSON.stringify(content.published?.services) ? content.revision : null,
+  })
+  app.get('/api/services', async (_req, res) => {
+    const content = await db.collection('content').findOne({ _id: 'main' })
+    if (!content) throw fail(503, 'Run npm run setup to initialize services')
+    res.json(serviceRecord(content))
+  })
+  app.put('/api/services', async (req, res) => {
+    const input = editSchema(servicesSchema).parse(req.body)
+    const content = await db.collection('content').findOneAndUpdate({ _id: 'main', revision: input.revision },
+      { $set: { 'draft.services': input.data, updatedAt: new Date() }, $inc: { revision: 1 } }, { returnDocument: 'after' })
+    if (!content) throw fail(409, 'Services changed in another window. Reload before saving.')
+    await activity(req, 'Saved draft', 'Services')
+    res.json(serviceRecord(content))
+  })
+  app.post('/api/services/publish', async (req, res) => {
+    const filter = { _id: 'main', revision: revision(req) }
+    const existing = await db.collection('content').findOne(filter)
+    if (!existing) throw fail(409, 'Services changed. Reload before publishing.')
+    const services = servicesSchema.parse(existing.draft.services)
+    const published = { ...existing.published, services }
+    const update = { 'published.services': services, publishedAt: new Date() }
+    if (JSON.stringify(published) === JSON.stringify(existing.draft)) update.publishedRevision = existing.revision
+    const content = await db.collection('content').findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' })
+    if (!content) throw fail(409, 'Services changed. Reload before publishing.')
+    await activity(req, 'Published', 'Services')
+    res.json(serviceRecord(content))
   })
   app.get('/api/content', async (_req, res) => {
     const content = await db.collection('content').findOne({ _id: 'main' })
