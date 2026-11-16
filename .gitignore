@@ -6,3 +6,6 @@ uploads/
 test-results/
 playwright-report/
 *.log
+.vercel/
+.env.*
+!.env.example

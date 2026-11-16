@@ -1,6 +1,6 @@
 # AGAI Studio
 
-A separate React + Node.js/Express + local MongoDB application for managing AGAI Physiotherapy Centre's blogs and main website content.
+A separate React + Node.js/Express + MongoDB application for managing AGAI Physiotherapy Centre's blogs and main website content.
 
 ## Run locally
 
@@ -24,7 +24,7 @@ Read `server/.local/admin-credentials.txt` for the generated administrator email
 - Journal search and filters; article creation, editing, previews, drafting and publishing; editable headings/text sections with reordering; categories and unique URL slugs.
 - Separate draft and published copies. Saving a draft never changes public content. Archive/unpublish removes public content; restoring returns an article to drafts.
 - Editors for clinic/contact details, homepage headline and hero, founder introduction, seven services, FAQs and first-visit steps. Service IDs/categories remain fixed to preserve existing links and filters.
-- Media library and image picker. JPEG/PNG/WebP uploads up to 8 MB are decoded, limited to 40 megapixels, resized to at most 2200 pixels, and stored as WebP. Images are public assets; avoid uploading confidential material.
+- Media library and image picker. JPEG/PNG/WebP uploads up to 3 MB are decoded, limited to 40 megapixels, resized to at most 2200 pixels, and stored as WebP in MongoDB. Images are public assets; avoid uploading confidential material.
 - Password changes, session invalidation, unsaved-change warnings and revision checks to prevent stale editors overwriting another editor's changes.
 
 The initial import includes the six articles and all current clinic/services content from the public website. Text is rendered safely through React, without arbitrary HTML. A missing blog cover uses the existing default image. Empty homepage/service image URLs are rejected.
@@ -50,17 +50,44 @@ Remove-Item Env:\CMS_API_URL
 
 Rebuild/deploy the public website after publishing, especially after adding, renaming, unpublishing or archiving articles. This refreshes static HTML, metadata, fallback content and sitemaps. Article sitemap dates use publication timestamps. Runtime changes appear on the next page load; existing open pages keep their loaded content. During a CMS outage, a previous built backup can still contain removed articles until it is redeployed.
 
-## Production
+## Deploy frontend and backend to Vercel
 
-Localhost is only available on this computer. For live visitors, host this Node application on a server that can reach MongoDB, for example a VPS with a local MongoDB instance. Keep this admin/API on its own HTTPS origin. No DNS or deployment has been performed.
+This repository is one Vercel project: Vite serves the React frontend and `api/index.js` runs Express as a Node.js function. API requests and session cookies stay on the same HTTPS origin. `vercel.json` selects Mumbai (`bom1`); choose an Atlas region nearby. No GCP resources or Secret Manager are required.
 
-1. Configure `server/.env`: `MONGODB_URI`, `MONGODB_DB`, `NODE_ENV=production`, a random `SESSION_SECRET` of at least 32 characters, and `PUBLIC_API_URL`/`ADMIN_ORIGIN` set to the actual HTTPS admin origin. `WEBSITE_URL` is `https://agaiphysiotherapy.com`.
-2. Run `npm ci`, `npm run setup`, `npm run build`, then `npm start` under a process manager. Express serves both the built frontend and the API.
-3. Put an HTTPS reverse proxy in front of Node. Enable `TRUST_PROXY=1` only with exactly one trusted proxy. Production session cookies require HTTPS. Allow request bodies of at least 8 MB plus multipart overhead.
-4. Set `VITE_CMS_API_URL` in the public website build environment to that public HTTPS origin. Optionally use `CMS_API_URL` for a different build-time origin. Rebuild/deploy. Never place database credentials, passwords or session secrets in `VITE_` variables.
-5. Keep MongoDB and `server/uploads/` persistent and back up both. Existing image URLs contain the configured API origin; retain redirects or migrate URLs when moving domains.
+MongoDB must be hosted separately (for example MongoDB Atlas). It stores content, users, sessions, login throttling, and uploaded WebP images. There is no runtime filesystem storage or separate Blob/Redis service. Media shares the database storage allowance: this suits a small clinic library, not a large media archive. Uploads are limited to 3 MB to leave room below Vercel's 4.5 MB request/response limit. Seed images are copied to the static CDN during build.
 
-Security includes HttpOnly SameSite cookies, MongoDB-backed sessions, CSRF tokens, write-origin checks, scrypt password hashing, login throttling, Helmet headers, validation, and noindex headers. The approach follows the [Express security guidance](https://expressjs.com/en/advanced/best-practice-security/).
+### Deploy through Vercel's GitHub integration
+
+1. Create a hosted MongoDB database (for example Atlas), with a database user that can read/write `agai_cms`. Configure network access for Vercel builds and functions. Their outbound addresses can vary; allowing `0.0.0.0/0` permits connections from anywhere and requires strong unique credentials and TLS. Keep independent database backups.
+2. Import this GitHub repository into one Vercel project. Root Directory: repository root (`.`), framework: Vite, Node.js: 22.x. `vercel.json` supplies the build command (`npm run build:vercel`) and output (`client/dist`). Keep Vercel's GitHub integration connected, with `main` as the production branch.
+3. In **Vercel > Project > Settings > Environment Variables**, add these for **Production**:
+
+   | Name | Value |
+   |---|---|
+   | `MONGODB_URI` | Atlas connection string; treat as a secret |
+   | `MONGODB_DB` | `agai_cms` |
+   | `SESSION_SECRET` | At least 32 random characters; treat as a secret and keep stable across deploys |
+   | `PUBLIC_API_URL` | Canonical project HTTPS URL, without `/api` or a trailing slash |
+   | `ADMIN_ORIGIN` | Same value as `PUBLIC_API_URL` |
+   | `NODE_ENV` | `production` |
+
+4. For a **new database only**, also add `INITIALIZE_DATABASE=true`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` (at least 12 characters, treated as a secret), scoped to **Production only**. The Vercel build first builds the frontend, then explicitly initializes the database. Existing administrator credentials and content are preserved. Restore existing data before deploying if you want to keep your local edits.
+5. Deploy. Verify `/api/health` and `/api/public/content`, then sign in with the initial administrator credentials. Remove `INITIALIZE_DATABASE` and `ADMIN_PASSWORD` from Vercel after successful initialization and redeploy to remove the bootstrap password from the current deployment environment. Change your administrator password in Settings. Subsequent builds do not connect to or initialize the database.
+6. Pushes to `main` now deploy automatically through Vercel. Environment-variable changes require a new deployment. No GitHub Actions secrets, Vercel deployment token, or GitHub production environment are required. The retained GitHub CI workflow runs isolated tests and builds only; it does not gate Vercel releases by itself. Use branch protection to require passing CI before merging into `main`.
+7. Ensure production `/api/public/content`, `/uploads/*`, and `/website-assets/*` are publicly accessible; deployment protection must not block the public website from reading them.
+8. Set the separate public website's `VITE_CMS_API_URL` to this project's canonical URL and rebuild that website. This admin frontend needs no environment variables: it calls `/api` on its own origin.
+
+Never prefix database credentials, passwords, or session secrets with `VITE_`. Use a separate database and session secret for Preview deployments, and configure their URLs accordingly. Do not enable `INITIALIZE_DATABASE` for previews: the build rejects initialization outside Production. Production secrets must not be available to unreviewed preview code.
+
+The previous GitHub deployment workflow has been removed. If you already added deployment secrets to GitHub for this project, they are no longer used and can be removed. Do not remove secrets used by unrelated workflows.
+
+### Existing local data
+
+A new Atlas database does not include your local edits. Back up and restore the existing MongoDB database into Atlas first if retaining that content. Copy the existing `server/uploads/` directory to the machine performing migration and run `npm run migrate:media --workspace server` with the destination `MONGODB_URI` configured in `server/.env`. This idempotently copies image bytes into `mediaFiles` without deleting local files. Resize any legacy images over 3 MB before migration. Replace old absolute origins in media URLs and draft/published content with the new canonical URL before going live; the migration does not silently rewrite content. Keep the old database and files until verification is complete.
+
+### Cost and limits
+
+Vercel Hobby is for personal, non-commercial use; this clinic application needs a plan allowing commercial use. MongoDB Atlas has a free cluster option with limited capacity. This conversion avoids paid GCP infrastructure and extra storage services, but does not promise zero hosting cost. See [Vercel plans](https://vercel.com/docs/plans/hobby), [function limits](https://vercel.com/docs/functions/limitations), and [Atlas free limits](https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/).
 
 ## Commands
 
@@ -79,6 +106,9 @@ This is an npm workspace with separate client and server packages. Run `npm ci` 
 
 ```text
 agai-admin/
+  api/index.js           Vercel API entry point
+  vercel.json            Unified frontend/API routing and Mumbai region
+  .github/workflows/     Isolated test/build CI (Vercel handles deployment)
   client/
     src/                 React editor and styles
     public/              Brand assets and fonts
@@ -91,7 +121,7 @@ agai-admin/
     scripts/setup.js     Administrator/content initialization
     tests/api.test.js    API integration tests
     seed/                Initial content and original image previews
-    uploads/             Persistent uploaded images (ignored by Git)
+    uploads/             Legacy local images for migration (ignored by Git)
     .local/              Existing credentials/session secret (ignored by Git)
     .env.example
     package.json         Backend dependencies and commands
@@ -102,7 +132,7 @@ agai-admin/
   package-lock.json      One lockfile for both workspaces
 ```
 
-Root commands remain unchanged. Run `npm run dev:client` or `npm run dev:server` to start only one side. Alternatively, from `client/` run `npm run dev` or `npm run build`; from `server/` run `npm run dev`, `npm start`, `npm run setup` or `npm test`. Server environment values live in `server/.env` and are read relative to that package. In production, the server serves `../client/dist/` alongside its API. Preserve both folders when deploying this combined-origin setup.
+Root commands remain unchanged. Run `npm run dev:client` or `npm run dev:server` to start only one side. Alternatively, from `client/` run `npm run dev` or `npm run build`; from `server/` run `npm run dev`, `npm start`, `npm run setup` or `npm test`. Server environment values live in `server/.env` and are read relative to that package. On Vercel, the frontend is served statically and `/api` runs as a function. Locally, `npm start` serves `../client/dist/` alongside the API.
 
 Credentials, the session secret, seed content and uploaded images were moved into `server/`; the existing MongoDB database was not changed.
 

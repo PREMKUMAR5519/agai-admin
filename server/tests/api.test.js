@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, unlinkSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import request from 'supertest'
 import session from 'express-session'
@@ -13,7 +13,6 @@ import { config, root } from '../src/config.js'
 const databaseName = `agai_cms_test_${Date.now()}`
 const password = 'Test-only-password-2026!'
 let client, db, app, agent, csrf, post
-const uploadedFiles = []
 const seed = JSON.parse(readFileSync(resolve(root, 'seed/content.json'), 'utf8'))
 before(async () => {
   ;({ client, db } = await connectDatabase(databaseName))
@@ -23,7 +22,6 @@ before(async () => {
   agent = request.agent(app)
 })
 after(async () => {
-  for (const filename of uploadedFiles) unlinkSync(resolve(config.uploads, filename))
   if (db && databaseName.startsWith('agai_cms_test_')) await db.dropDatabase()
   await client?.close()
 })
@@ -87,10 +85,15 @@ test('uploads decode real images and reject disguised files', async () => {
   await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', Buffer.from('<script>alert(1)</script>'), { filename: 'fake.jpg', contentType: 'image/jpeg' }).expect(400)
   const buffer = await sharp({ create: { width: 10, height: 10, channels: 3, background: '#0756aa' } }).png().toBuffer()
   const uploaded = (await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'test.png').expect(201)).body
-  uploadedFiles.push(uploaded.filename)
   assert.match(uploaded.filename, /^[\w-]+\.webp$/)
   assert.equal(uploaded.width, 10)
   await request(app).get(`/uploads/${uploaded.filename}`).expect(200).expect('Content-Type', /image\/webp/)
+  const coldApp = createApp({ db, client, sessionStore: new session.MemoryStore() })
+  await request(coldApp).get(`/uploads/${uploaded.filename}`).expect(200).expect('Cache-Control', /immutable/)
+  assert.ok(await db.collection('mediaFiles').findOne({ _id: uploaded.filename }))
+  const media = await agent.get('/api/media').expect(200)
+  assert.equal(media.body[0].data, undefined)
+  await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', Buffer.alloc(3 * 1024 * 1024 + 1), 'large.png').expect(400)
 })
 test('password changes invalidate other sessions and logout revokes access', async () => {
   const other = request.agent(app)
@@ -100,4 +103,33 @@ test('password changes invalidate other sessions and logout revokes access', asy
   await other.get('/api/posts').expect(401)
   await agent.post('/api/auth/logout').set('X-CSRF-Token', csrf).expect(200)
   await agent.get('/api/posts').expect(401)
+})
+
+test('login throttling is shared by separate application instances', async () => {
+  await db.collection('loginLimits').deleteMany({})
+  const second = createApp({ db, client, sessionStore: new session.MemoryStore() })
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await request(attempt % 2 ? second : app).post('/api/auth/login').send({}).expect(400)
+  }
+  await request(second).post('/api/auth/login').send({}).expect(429).expect('Retry-After', /\d+/)
+})
+
+test('Vercel HTTPS proxy supports secure sessions and MongoDB-backed media', async () => {
+  await db.collection('loginLimits').deleteMany({})
+  const original = { production: config.production, vercel: config.vercel }
+  Object.assign(config, { production: true, vercel: true })
+  try {
+    const serverless = createApp({ db, client, sessionStore: new session.MemoryStore() })
+    const login = await request(serverless).post('/api/auth/login')
+      .set('X-Forwarded-Proto', 'https').set('Origin', config.publicUrl)
+      .send({ email: 'test@example.com', password: 'A-new-private-password-2026!' }).expect(200)
+    assert.match(login.headers['set-cookie'][0], /; Secure/)
+    const cookie = login.headers['set-cookie'][0].split(';')[0]
+    await request(serverless).get('/api/auth/me').set('X-Forwarded-Proto', 'https').set('Cookie', cookie).expect(200)
+    const media = await db.collection('media').findOne()
+    const response = await request(serverless).get(`/uploads/${media.filename}`).expect(200)
+    const stored = await db.collection('mediaFiles').findOne({ _id: media.filename })
+    assert.deepEqual(response.body, Buffer.from(stored.data.buffer))
+    await request(serverless).get('/uploads/not-present.webp').expect(404)
+  } finally { Object.assign(config, original) }
 })

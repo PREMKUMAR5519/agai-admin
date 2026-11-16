@@ -56,6 +56,7 @@ function MediaDialog({ onClose, onSelect }) {
   async function upload(event) {
     const file = event.target.files?.[0]
     if (!file) return
+    if (file.size > 3 * 1024 * 1024) { setMessage('Choose an image smaller than 3 MB.'); event.target.value = ''; return }
     setBusy(true); setMessage('')
     try { const body = new FormData(); body.append('image', file); const media = await api('/media', { method: 'POST', body }); setData(items => [media, ...(items || [])]); onSelect(media.url) } catch (error) { setMessage(error.message) } finally { setBusy(false) }
   }

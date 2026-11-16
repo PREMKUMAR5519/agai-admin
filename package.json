@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.18.0"
+    "node": "22.x"
   },
   "workspaces": [
     "client",
@@ -16,7 +16,8 @@
     "dev:client": "npm run dev --workspace client",
     "dev:api": "npm run dev:server",
     "dev:web": "npm run dev:client",
-    "build": "npm run build --workspace client",
+    "build": "npm run build --workspace client && node scripts/copy-assets.js",
+    "build:vercel": "node scripts/vercel-build.js",
     "start": "npm run start --workspace server",
     "setup": "npm run setup --workspace server",
     "test": "npm run test --workspace server",

@@ -2,12 +2,12 @@ import express from 'express'
 import helmet from 'helmet'
 import session from 'express-session'
 import MongoStore from 'connect-mongo'
-import { rateLimit } from 'express-rate-limit'
+import { loginLimit } from './login-limit.js'
 import multer from 'multer'
 import sharp from 'sharp'
 import { ObjectId } from 'mongodb'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { config, root, clientRoot } from './config.js'
 import { checkPassword, hashPassword, csrfToken } from './security.js'
@@ -26,7 +26,7 @@ const saveSession = req => new Promise((resolve, reject) => req.session.save(err
 
 export function createApp({ db, client, sessionStore } = {}) {
   const app = express()
-  if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1)
+  if (config.vercel || process.env.TRUST_PROXY === '1') app.set('trust proxy', 1)
   app.disable('x-powered-by')
   app.use(helmet({
     contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http://localhost:5001', 'http://127.0.0.1:5001'], upgradeInsecureRequests: config.production ? [] : null } },
@@ -54,8 +54,15 @@ export function createApp({ db, client, sessionStore } = {}) {
       articles: posts.map(post => ({ ...post.published, publishedAt: post.publishedAt, updatedAt: post.publishedAt })),
     })
   })
-  mkdirSync(config.uploads, { recursive: true })
-  app.use('/uploads', express.static(config.uploads, { maxAge: '1y', immutable: true, dotfiles: 'deny' }))
+  // Keep existing local uploads readable while migrating; Vercel uses only MongoDB.
+  if (!config.vercel) app.use('/uploads', express.static(config.uploads, { maxAge: '1y', immutable: true, dotfiles: 'deny' }))
+  app.get('/uploads/:filename', async (req, res, next) => {
+    if (!/^[\w-]+\.webp$/.test(req.params.filename)) return next(fail(404, 'Image not found'))
+    const image = await db.collection('mediaFiles').findOne({ _id: req.params.filename })
+    if (!image) return next(fail(404, 'Image not found'))
+    res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    res.type('webp').send(Buffer.from(image.data.buffer))
+  })
   app.use('/website-assets', express.static(resolve(root, 'seed/assets'), { maxAge: '1h' }))
   app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next() })
   const store = sessionStore || MongoStore.create({ client, dbName: db.databaseName, collectionName: 'sessions', ttl: 8 * 3600 })
@@ -63,13 +70,13 @@ export function createApp({ db, client, sessionStore } = {}) {
     cookie: { httpOnly: true, secure: config.production, sameSite: 'strict', maxAge: 8 * 3600 * 1000 },
   }))
   const origins = new Set([config.adminOrigin, config.publicUrl])
+  if (config.vercel && process.env.VERCEL_URL) origins.add(`https://${process.env.VERCEL_URL}`)
   if (!config.production) ['http://localhost:5177', 'http://127.0.0.1:5177', 'http://localhost:5001', 'http://127.0.0.1:5001'].forEach(origin => origins.add(origin))
   app.use('/api', (req, _res, next) => {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && !origins.has(req.headers.origin)) return next(fail(403, 'Request origin is not allowed'))
     next()
   })
-  const loginLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false, message: { message: 'Too many sign-in attempts. Try again in 15 minutes.' } })
-  app.post('/api/auth/login', loginLimit, async (req, res) => {
+  app.post('/api/auth/login', loginLimit(db), async (req, res) => {
     const input = loginSchema.parse(req.body)
     const user = await db.collection('users').findOne({ email: input.email })
     if (!user || !(await checkPassword(input.password, user.passwordHash))) throw fail(401, 'Email or password is incorrect')
@@ -93,7 +100,7 @@ export function createApp({ db, client, sessionStore } = {}) {
     if (error) return next(error)
     res.clearCookie('agai.sid', { httpOnly: true, secure: config.production, sameSite: 'strict' }).json({ ok: true })
   }))
-  app.post('/api/auth/password', loginLimit, async (req, res) => {
+  app.post('/api/auth/password', loginLimit(db), async (req, res) => {
     const input = passwordSchema.parse(req.body)
     if (!(await checkPassword(input.currentPassword, req.user.passwordHash))) throw fail(400, 'Current password is incorrect')
     await db.collection('users').updateOne({ _id: req.user._id }, { $set: { passwordHash: await hashPassword(input.newPassword) }, $inc: { authVersion: 1 } })
@@ -177,32 +184,36 @@ export function createApp({ db, client, sessionStore } = {}) {
     await activity(req, 'Published', 'Website content')
     res.json(content)
   })
-  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024, files: 1 }, fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) })
+  const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024, files: 1, fields: 0, parts: 1 }, fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) })
   app.get('/api/media', async (_req, res) => res.json(await db.collection('media').find().sort({ createdAt: -1 }).toArray()))
   app.post('/api/media', upload.single('image'), async (req, res) => {
-    if (!req.file) throw fail(400, 'Choose a JPEG, PNG or WebP image under 8 MB')
+    if (!req.file) throw fail(400, 'Choose a JPEG, PNG or WebP image under 3 MB')
     const filename = `${randomUUID()}.webp`
     let output
     try {
       const source = sharp(req.file.buffer, { limitInputPixels: 40000000 })
       const metadata = await source.metadata()
       if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw new Error('Unsupported image format')
-      output = await source.rotate().resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toFile(resolve(config.uploads, filename))
+      output = await source.rotate().resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer({ resolveWithObject: true })
     } catch { throw fail(400, 'This file could not be decoded as a supported image') }
-    const record = { filename, originalName: req.file.originalname.slice(0, 200), url: `${config.publicUrl}/uploads/${filename}`, width: output.width, height: output.height, size: output.size, createdAt: new Date() }
-    const result = await db.collection('media').insertOne(record)
+    if (output.data.length > 3 * 1024 * 1024) throw fail(400, 'Optimized image is too large. Choose a smaller image.')
+    const record = { filename, originalName: req.file.originalname.slice(0, 200), url: `${config.publicUrl}/uploads/${filename}`, width: output.info.width, height: output.info.height, size: output.info.size, createdAt: new Date() }
+    await db.collection('mediaFiles').insertOne({ _id: filename, data: output.data })
+    let result
+    try { result = await db.collection('media').insertOne(record) }
+    catch (error) { await db.collection('mediaFiles').deleteOne({ _id: filename }); throw error }
     await activity(req, 'Uploaded image', record.originalName)
     res.status(201).json({ ...record, _id: result.insertedId })
   })
   app.use('/api', (_req, _res, next) => next(fail(404, 'API route not found')))
-  if (existsSync(resolve(clientRoot, 'dist/index.html'))) {
+  if (!config.vercel && existsSync(resolve(clientRoot, 'dist/index.html'))) {
     app.use(express.static(resolve(clientRoot, 'dist')))
     app.get('/{*path}', (_req, res) => res.sendFile(resolve(clientRoot, 'dist/index.html')))
   }
   app.use((error, _req, res, _next) => {
     if (error.name === 'ZodError') return res.status(400).json({ message: error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ') })
     if (error.code === 11000) return res.status(409).json({ message: 'This article URL is already in use. Choose a unique slug.' })
-    if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'Images must be smaller than 8 MB' })
+    if (error.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ message: 'Images must be smaller than 3 MB' })
     const status = error.status || (error instanceof multer.MulterError ? 400 : 500)
     if (status === 500) console.error(error)
     res.status(status).json({ message: status === 500 ? 'Something went wrong. Please try again.' : error.message })

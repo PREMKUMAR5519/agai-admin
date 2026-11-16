@@ -1,0 +1,7 @@
+.git
+.env*
+server/.env*
+server/.local
+server/uploads
+test-results
+playwright-report
