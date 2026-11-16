@@ -16,7 +16,7 @@ npm run dev
 
 Open **http://localhost:5177**. The API is at **http://127.0.0.1:5001**, using database **agai_cms**. Both bind to loopback by default. This checkout has already been installed and initialized.
 
-Read `server/.local/admin-credentials.txt` for the generated administrator email and password. Change the password in Settings after signing in. Credentials and the session secret are ignored by Git. Re-running setup preserves the existing administrator and content; it does not reset passwords or recreate renamed/archived articles.
+Administrator accounts live in the MongoDB `users` collection, with salted scrypt password hashes. For an empty database, supply `ADMIN_EMAIL` and `ADMIN_PASSWORD` as temporary process environment variables before running setup, then remove them. Setup never generates, prints, or saves a plaintext password file. Sign in with the password you supplied. Re-running setup preserves the existing administrator and content. Production requires `SESSION_SECRET` in Vercel; local development uses an in-memory secret if none is supplied, so sessions expire on restart.
 
 ## Features
 
@@ -67,12 +67,12 @@ MongoDB must be hosted separately (for example MongoDB Atlas). It stores content
    | `MONGODB_URI` | Atlas connection string; treat as a secret |
    | `MONGODB_DB` | `agai_cms` |
    | `SESSION_SECRET` | At least 32 random characters; treat as a secret and keep stable across deploys |
-   | `PUBLIC_API_URL` | Canonical project HTTPS URL, without `/api` or a trailing slash |
-   | `ADMIN_ORIGIN` | Same value as `PUBLIC_API_URL` |
+   | `API_URL` | Canonical project HTTPS URL, without `/api` or a trailing slash |
+   | `ADMIN_ORIGIN` | Same value as `API_URL` |
    | `NODE_ENV` | `production` |
 
 4. For a **new database only**, also add `INITIALIZE_DATABASE=true`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` (at least 12 characters, treated as a secret), scoped to **Production only**. The Vercel build first builds the frontend, then explicitly initializes the database. Existing administrator credentials and content are preserved. Restore existing data before deploying if you want to keep your local edits.
-5. Deploy. Verify `/api/health` and `/api/public/content`, then sign in with the initial administrator credentials. Remove `INITIALIZE_DATABASE` and `ADMIN_PASSWORD` from Vercel after successful initialization and redeploy to remove the bootstrap password from the current deployment environment. Change your administrator password in Settings. Subsequent builds do not connect to or initialize the database.
+5. Deploy. Verify `/api/health` and `/api/public/content`, then sign in with the initial administrator credentials. Remove `INITIALIZE_DATABASE`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` from Vercel after successful initialization and redeploy to remove the bootstrap password from the current deployment environment. Change your administrator password in Settings. Subsequent builds do not connect to or initialize the database.
 6. Pushes to `main` now deploy automatically through Vercel. Environment-variable changes require a new deployment. No GitHub Actions secrets, Vercel deployment token, or GitHub production environment are required. The retained GitHub CI workflow runs isolated tests and builds only; it does not gate Vercel releases by itself. Use branch protection to require passing CI before merging into `main`.
 7. Ensure production `/api/public/content`, `/uploads/*`, and `/website-assets/*` are publicly accessible; deployment protection must not block the public website from reading them.
 8. Set the separate public website's `VITE_CMS_API_URL` to this project's canonical URL and rebuild that website. This admin frontend needs no environment variables: it calls `/api` on its own origin.
@@ -122,7 +122,7 @@ agai-admin/
     tests/api.test.js    API integration tests
     seed/                Initial content and original image previews
     uploads/             Legacy local images for migration (ignored by Git)
-    .local/              Existing credentials/session secret (ignored by Git)
+    .local/              Temporary browser-test state only (ignored by Git)
     .env.example
     package.json         Backend dependencies and commands
   scripts/               Cross-application browser test helpers
@@ -134,7 +134,7 @@ agai-admin/
 
 Root commands remain unchanged. Run `npm run dev:client` or `npm run dev:server` to start only one side. Alternatively, from `client/` run `npm run dev` or `npm run build`; from `server/` run `npm run dev`, `npm start`, `npm run setup` or `npm test`. Server environment values live in `server/.env` and are read relative to that package. On Vercel, the frontend is served statically and `/api` runs as a function. Locally, `npm start` serves `../client/dist/` alongside the API.
 
-Credentials, the session secret, seed content and uploaded images were moved into `server/`; the existing MongoDB database was not changed.
+Admin login reads MongoDB only. No local credential file is used. Seed content remains in `server/seed/`; legacy local images can be migrated into MongoDB.
 
 Browser tests use Edge on Windows; elsewhere run `npx playwright install chromium`. They require the sibling `../agai` checkout and free ports 5002, 5178 and 5190. Development uses 5001/5177. Test content is isolated from `agai_cms`.
 

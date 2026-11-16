@@ -1,14 +1,15 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createServer } from 'vite'
 
 process.env.ADMIN_ORIGIN = 'http://127.0.0.1:5178'
-process.env.PUBLIC_API_URL = 'http://127.0.0.1:5002'
+process.env.API_URL = 'http://127.0.0.1:5002'
 process.env.API_PROXY_TARGET = 'http://127.0.0.1:5002'
 const [{ connectDatabase }, { hashPassword }, { createApp }, { root, clientRoot }] = await Promise.all([
   import('../server/src/db.js'), import('../server/src/security.js'), import('../server/src/app.js'), import('../server/src/config.js'),
 ])
 const dbName = `agai_cms_e2e_${process.pid}`
+mkdirSync(resolve(root, '.local'), { recursive: true })
 writeFileSync(resolve(root, '.local/e2e-state.json'), JSON.stringify({ dbName }))
 const { client, db } = await connectDatabase(dbName)
 const seed = JSON.parse(readFileSync(resolve(root, 'seed/content.json'), 'utf8'))

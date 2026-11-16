@@ -5,9 +5,10 @@ import { resolve } from 'node:path'
 import request from 'supertest'
 import session from 'express-session'
 import sharp from 'sharp'
+import { execFileSync } from 'node:child_process'
 import { connectDatabase } from '../src/db.js'
 import { createApp } from '../src/app.js'
-import { hashPassword } from '../src/security.js'
+import { checkPassword, hashPassword } from '../src/security.js'
 import { config, root } from '../src/config.js'
 
 const databaseName = `agai_cms_test_${Date.now()}`
@@ -132,4 +133,27 @@ test('Vercel HTTPS proxy supports secure sessions and MongoDB-backed media', asy
     assert.deepEqual(response.body, Buffer.from(stored.data.buffer))
     await request(serverless).get('/uploads/not-present.webp').expect(404)
   } finally { Object.assign(config, original) }
+})
+
+test('setup stores only a MongoDB password hash and preserves existing credentials', async () => {
+  const setupName = `${databaseName}_setup`
+  const setupDb = client.db(setupName)
+  const bootstrapPassword = 'Bootstrap-test-password-2026!'
+  const env = { ...process.env, MONGODB_URI: config.mongoUri, MONGODB_DB: setupName,
+    NODE_ENV: 'production', SESSION_SECRET: config.secret, ADMIN_EMAIL: 'setup@example.com', ADMIN_PASSWORD: bootstrapPassword }
+  try {
+    const output = execFileSync(process.execPath, [resolve(root, 'scripts/setup.js')], { env, encoding: 'utf8' })
+    assert.equal(output.includes(bootstrapPassword), false)
+    const user = await setupDb.collection('users').findOne()
+    assert.equal(user.email, 'setup@example.com')
+    assert.equal(user.password, undefined)
+    assert.equal(await checkPassword(bootstrapPassword, user.passwordHash), true)
+    execFileSync(process.execPath, [resolve(root, 'scripts/setup.js')], { env: { ...env, ADMIN_EMAIL: '', ADMIN_PASSWORD: '' }, encoding: 'utf8' })
+    assert.equal((await setupDb.collection('users').findOne()).passwordHash, user.passwordHash)
+    await setupDb.collection('users').deleteMany({})
+    assert.throws(() => execFileSync(process.execPath, [resolve(root, 'scripts/setup.js')], {
+      env: { ...env, ADMIN_EMAIL: '', ADMIN_PASSWORD: '' }, stdio: 'pipe',
+    }))
+    assert.equal(await setupDb.collection('users').countDocuments(), 0)
+  } finally { await setupDb.dropDatabase() }
 })

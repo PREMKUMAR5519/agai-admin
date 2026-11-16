@@ -1,24 +1,19 @@
-import { randomBytes } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { connectDatabase } from '../src/db.js'
-import { config, root } from '../src/config.js'
+import { root } from '../src/config.js'
 import { hashPassword } from '../src/security.js'
 import { articleSchema, contentSchema } from '../src/schema.js'
 
 const { client, db } = await connectDatabase()
 try {
   if (!(await db.collection('users').findOne())) {
-    const email = (process.env.ADMIN_EMAIL || 'admin@agaiphysiotherapy.com').trim().toLowerCase()
-    if (config.production && !process.env.ADMIN_PASSWORD) throw new Error('ADMIN_PASSWORD is required to initialize a production administrator')
-    const password = process.env.ADMIN_PASSWORD || randomBytes(18).toString('base64url')
+    if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD are required to initialize a new administrator')
+    const email = process.env.ADMIN_EMAIL.trim().toLowerCase()
+    const password = process.env.ADMIN_PASSWORD
     if (password.length < 12) throw new Error('ADMIN_PASSWORD must contain at least 12 characters')
     await db.collection('users').insertOne({ email, name: 'AGAI Admin', passwordHash: await hashPassword(password), authVersion: 1, createdAt: new Date() })
-    if (!process.env.ADMIN_PASSWORD) {
-      mkdirSync(resolve(root, '.local'), { recursive: true })
-      writeFileSync(resolve(root, '.local/admin-credentials.txt'), `AGAI Studio local administrator\nURL: http://localhost:5177\nEmail: ${email}\nPassword: ${password}\n\nChange this password in Settings after signing in. This file is ignored by Git.\n`, { mode: 0o600 })
-      console.log('Administrator created. Sign-in details saved to .local/admin-credentials.txt')
-    } else console.log('Administrator created using the supplied credentials.')
+    console.log('Administrator created in MongoDB. Only the password hash is stored.')
   } else console.log('Administrator already exists; credentials unchanged.')
   const seed = JSON.parse(readFileSync(resolve(root, 'seed/content.json'), 'utf8'))
   const now = new Date()
