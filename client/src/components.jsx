@@ -1,3 +1,4 @@
+import { uploadImage } from './image-upload'
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { useBlocker } from 'react-router'
 import { AlertCircle, ArrowLeft, LoaderCircle, Upload, X } from 'lucide-react'
@@ -56,10 +57,9 @@ function MediaDialog({ onClose, onSelect }) {
   async function upload(event) {
     const file = event.target.files?.[0]
     if (!file) return
-    if (file.size > 3 * 1024 * 1024) { setMessage('Choose an image smaller than 3 MB.'); event.target.value = ''; return }
     setBusy(true); setMessage('')
-    try { const body = new FormData(); body.append('image', file); const media = await api('/media', { method: 'POST', body }); setData(items => [media, ...(items || [])]); onSelect(media.url) } catch (error) { setMessage(error.message) } finally { setBusy(false) }
+    try { const media = await uploadImage(file); setData(items => [media, ...(items || [])]); onSelect(media.url) } catch (error) { setMessage(error.message) } finally { setBusy(false); event.target.value = '' }
   }
-  return <dialog className="media-dialog" ref={dialog} onCancel={onClose}><div className="dialog-head"><div><p className="eyebrow">MEDIA LIBRARY</p><h2>Choose an image</h2></div><button type="button" className="icon-button" aria-label="Close image picker" onClick={onClose}><X/></button></div><label className="button primary upload-button"><Upload size={17}/>{busy ? 'Uploading…' : 'Upload new image'}<input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={upload}/></label><Notice error>{error || message}</Notice>{data ? <div className="media-grid compact">{data.map(item => <button key={item._id} type="button" className="media-choice" onClick={() => onSelect(item.url)}><img src={item.url} alt={item.originalName}/><span>{item.originalName}</span></button>)}{!data.length && <p>No uploads yet. Choose an image from your computer.</p>}</div> : <Loading/>}</dialog>
+  return <dialog className="media-dialog" ref={dialog} onCancel={onClose}><div className="dialog-head"><div><p className="eyebrow">MEDIA LIBRARY</p><h2>Choose an image</h2></div><button type="button" className="icon-button" aria-label="Close image picker" onClick={onClose}><X/></button></div><label className="button primary upload-button"><Upload size={17}/>{busy ? 'Optimizing and uploading…' : 'Upload new image'}<input type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={upload}/></label><Notice error>{error || message}</Notice>{data ? <div className="media-grid compact">{data.map(item => <button key={item._id} type="button" className="media-choice" onClick={() => onSelect(item.url)}><img src={item.url} alt={item.originalName}/><span>{item.originalName}</span></button>)}{!data.length && <p>No uploads yet. Choose an image from your computer.</p>}</div> : <Loading/>}</dialog>
 }
 export function BackButton({ onClick, children = 'Back' }) { return <button type="button" className="text-button" onClick={onClick}><ArrowLeft size={16}/>{children}</button> }

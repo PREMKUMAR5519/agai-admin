@@ -10,8 +10,9 @@
     "dev": "node --watch --env-file-if-exists=.env src/index.js",
     "start": "node --env-file-if-exists=.env src/index.js",
     "setup": "node --env-file-if-exists=.env scripts/setup.js",
+    "check:db": "node --env-file-if-exists=.env scripts/check-db.js",
     "migrate:media": "node --env-file-if-exists=.env scripts/migrate-media.js",
-    "test": "node --test tests/api.test.js"
+    "test": "node --test tests/api.test.js tests/database-diagnostics.test.js tests/optimize-image.test.js"
   },
   "dependencies": {
     "connect-mongo": "^6.0.0",

@@ -1,4 +1,5 @@
 // One Express instance and connection pool per warm Vercel function instance.
+import { databaseFailureMessage } from '../server/src/database-diagnostics.js'
 let application
 export default async function handler(req, res) {
   try {
@@ -10,8 +11,9 @@ export default async function handler(req, res) {
     }).catch(error => { application = undefined; throw error })
     const app = await application
     return app(req, res)
-  } catch {
+  } catch (error) {
     console.error('API initialization failed. Check runtime configuration and database connectivity.')
+    console.error(databaseFailureMessage(error))
     res.statusCode = 503
     res.setHeader('Content-Type', 'application/json')
     res.setHeader('Cache-Control', 'no-store')

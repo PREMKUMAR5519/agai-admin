@@ -4,8 +4,13 @@ import { connectDatabase } from '../src/db.js'
 import { root } from '../src/config.js'
 import { hashPassword } from '../src/security.js'
 import { articleSchema, contentSchema } from '../src/schema.js'
+import { databaseFailureMessage } from '../src/database-diagnostics.js'
 
-const { client, db } = await connectDatabase()
+const { client, db } = await connectDatabase().catch(error => {
+  console.error(`Database setup could not connect. ${databaseFailureMessage(error)}`)
+  console.error('Initialization did not run. Resolve connectivity and rerun setup; do not skip setup for an empty database.')
+  process.exit(1)
+})
 try {
   if (!(await db.collection('users').findOne())) {
     if (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD) throw new Error('ADMIN_EMAIL and ADMIN_PASSWORD are required to initialize a new administrator')

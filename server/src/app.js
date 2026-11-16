@@ -4,7 +4,7 @@ import session from 'express-session'
 import MongoStore from 'connect-mongo'
 import { loginLimit } from './login-limit.js'
 import multer from 'multer'
-import sharp from 'sharp'
+import { optimizeImage } from './optimize-image.js'
 import { ObjectId } from 'mongodb'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -191,12 +191,8 @@ export function createApp({ db, client, sessionStore } = {}) {
     const filename = `${randomUUID()}.webp`
     let output
     try {
-      const source = sharp(req.file.buffer, { limitInputPixels: 40000000 })
-      const metadata = await source.metadata()
-      if (!['jpeg', 'png', 'webp'].includes(metadata.format)) throw new Error('Unsupported image format')
-      output = await source.rotate().resize({ width: 2200, height: 2200, fit: 'inside', withoutEnlargement: true }).webp({ quality: 85 }).toBuffer({ resolveWithObject: true })
+      output = await optimizeImage(req.file.buffer)
     } catch { throw fail(400, 'This file could not be decoded as a supported image') }
-    if (output.data.length > 3 * 1024 * 1024) throw fail(400, 'Optimized image is too large. Choose a smaller image.')
     const record = { filename, originalName: req.file.originalname.slice(0, 200), url: `${config.publicUrl}/uploads/${filename}`, width: output.info.width, height: output.info.height, size: output.info.size, createdAt: new Date() }
     await db.collection('mediaFiles').insertOne({ _id: filename, data: output.data })
     let result

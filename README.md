@@ -24,7 +24,7 @@ Administrator accounts live in the MongoDB `users` collection, with salted scryp
 - Journal search and filters; article creation, editing, previews, drafting and publishing; editable headings/text sections with reordering; categories and unique URL slugs.
 - Separate draft and published copies. Saving a draft never changes public content. Archive/unpublish removes public content; restoring returns an article to drafts.
 - Editors for clinic/contact details, homepage headline and hero, founder introduction, seven services, FAQs and first-visit steps. Service IDs/categories remain fixed to preserve existing links and filters.
-- Media library and image picker. JPEG/PNG/WebP uploads up to 3 MB are decoded, limited to 40 megapixels, resized to at most 2200 pixels, and stored as WebP in MongoDB. Images are public assets; avoid uploading confidential material.
+- Media library and image picker. JPEG/PNG/WebP originals up to 20 MB and 40 megapixels are resized in the browser before upload. The backend validates and stores only WebP images, at most 1920 pixels on the longest edge and 512 KB, using quality 80 and further resizing when needed. Transparency and orientation are preserved; metadata is stripped. Images are public assets; avoid uploading confidential material.
 - Password changes, session invalidation, unsaved-change warnings and revision checks to prevent stale editors overwriting another editor's changes.
 
 The initial import includes the six articles and all current clinic/services content from the public website. Text is rendered safely through React, without arbitrary HTML. A missing blog cover uses the existing default image. Empty homepage/service image URLs are rejected.
@@ -54,7 +54,7 @@ Rebuild/deploy the public website after publishing, especially after adding, ren
 
 This repository is one Vercel project: Vite serves the React frontend and `api/index.js` runs Express as a Node.js function. API requests and session cookies stay on the same HTTPS origin. `vercel.json` selects Mumbai (`bom1`); choose an Atlas region nearby. No GCP resources or Secret Manager are required.
 
-MongoDB must be hosted separately (for example MongoDB Atlas). It stores content, users, sessions, login throttling, and uploaded WebP images. There is no runtime filesystem storage or separate Blob/Redis service. Media shares the database storage allowance: this suits a small clinic library, not a large media archive. Uploads are limited to 3 MB to leave room below Vercel's 4.5 MB request/response limit. Seed images are copied to the static CDN during build.
+MongoDB must be hosted separately (for example MongoDB Atlas). It stores content, users, sessions, login throttling, and uploaded WebP images. There is no runtime filesystem storage or separate Blob/Redis service. Media shares the database storage allowance: this suits a small clinic library, not a large media archive. Browser optimization keeps image payloads under 2 MB; the API retains a 3 MB transport limit below Vercel's 4.5 MB request/response limit. Browsers without WebP encoding send resized PNGs for backend conversion. Seed images are copied to the static CDN during build.
 
 ### Deploy through Vercel's GitHub integration
 
@@ -80,6 +80,16 @@ MongoDB must be hosted separately (for example MongoDB Atlas). It stores content
 Never prefix database credentials, passwords, or session secrets with `VITE_`. Use a separate database and session secret for Preview deployments, and configure their URLs accordingly. Do not enable `INITIALIZE_DATABASE` for previews: the build rejects initialization outside Production. Production secrets must not be available to unreviewed preview code.
 
 The previous GitHub deployment workflow has been removed. If you already added deployment secrets to GitHub for this project, they are no longer used and can be removed. Do not remove secrets used by unrelated workflows.
+
+### Troubleshooting a MongoDB TLS error during deployment
+
+If `build:vercel` fails in `server/scripts/setup.js` with `ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR`, the database initialization connection failed. The frontend build and the database connection are separate steps. Do not disable TLS or certificate verification to work around it.
+
+1. In Atlas, confirm the cluster is available and **Network Access / IP Access List** permits Vercel's outbound connections. Allowing only your laptop's IP does not allow Vercel. If using Vercel Static IPs, allowlist those addresses and enable **Settings > Networking > Static IPs > Use for builds**; builds otherwise use dynamic addresses. See [Vercel networking](https://vercel.com/docs/networking/static-ips) and [Atlas connection troubleshooting](https://www.mongodb.com/docs/atlas/troubleshoot-connection/).
+2. Check the **Production** value of `MONGODB_URI` against Atlas **Connect > Drivers**. Use a database user's credentials, URL-encode reserved password characters, and ensure the cluster host is correct. Changes take effect on a new deployment.
+3. Run `npm run check:db` locally using `server/.env` to test connectivity without changing content. Success verifies only the environment where the command runs. To diagnose Vercel itself, temporarily set its Build Command to `npm run check:db && npm run build:vercel`, then restore `npm run build:vercel` after diagnosis.
+4. If the database is already initialized, remove `INITIALIZE_DATABASE`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` from Vercel and redeploy. If it is empty, keep first-time initialization enabled until it succeeds. Removing the flag does not fix runtime database connectivity.
+5. If connectivity settings are correct but failures persist, check Atlas cluster metrics/status and retry once the service is healthy. The driver's `SystemOverloadedError` label can also accompany TLS/network failures and does not alone establish overload.
 
 ### Existing local data
 
