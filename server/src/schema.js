@@ -38,4 +38,5 @@ export const contentSchema = z.object({
 })
 export const loginSchema = z.object({ email: z.email().max(200).transform(value => value.toLowerCase()), password: z.string().min(1).max(256) })
 export const passwordSchema = z.object({ currentPassword: z.string().min(1).max(256), newPassword: z.string().min(12).max(128) })
+export const deleteServiceSchema = z.object({ revision: z.number().int().min(0), password: z.string().min(1).max(256) })
 export const editSchema = schema => z.object({ revision: z.number().int().min(0), data: schema })

@@ -6,6 +6,7 @@ import request from 'supertest'
 import session from 'express-session'
 import sharp from 'sharp'
 import { execFileSync } from 'node:child_process'
+import { ObjectId } from 'mongodb'
 import { connectDatabase } from '../src/db.js'
 import { createApp } from '../src/app.js'
 import { checkPassword, hashPassword } from '../src/security.js'
@@ -98,13 +99,36 @@ test('draft, publish, edit, and conflict handling keep public content correct', 
   post = (await agent.post(`/api/posts/${post._id}/publish`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(200)).body
   assert.equal((await request(app).get('/api/public/content')).body.articles[0].title, 'Private changes')
 })
-test('archive removes articles publicly and restore keeps them as drafts', async () => {
-  post = (await agent.post(`/api/posts/${post._id}/archive`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(200)).body
+test('permanent deletion requires authentication, CSRF and the current revision', async () => {
+  const path = `/api/posts/${post._id}`
+  await request(app).delete(path).send({ revision: post.revision }).expect(401)
+  await agent.delete(path).send({ revision: post.revision }).expect(403)
+  await agent.delete(path).set('X-CSRF-Token', csrf).expect(400)
+  await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: post.revision - 1 }).expect(409)
+  await agent.post(`${path}/archive`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(404)
+  await agent.post(`${path}/restore`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(404)
+  assert.ok(await db.collection('posts').findOne({ _id: new ObjectId(post._id) }))
+  assert.equal((await request(app).get('/api/public/content')).body.articles.length, 1)
+})
+
+test('permanent deletion removes the entire database record and public article', async () => {
+  await agent.delete(`/api/posts/${post._id}`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(200)
+  assert.equal(await db.collection('posts').findOne({ _id: new ObjectId(post._id) }), null)
   assert.equal((await request(app).get('/api/public/content')).body.articles.length, 0)
-  await agent.post(`/api/posts/${post._id}/publish`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(400)
-  post = (await agent.post(`/api/posts/${post._id}/restore`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(200)).body
-  assert.equal(post.published, null)
-  assert.equal(post.archived, false)
+  assert.equal((await agent.get('/api/posts')).body.some(item => item._id === post._id), false)
+  assert.equal((await agent.get('/api/dashboard')).body.total, 0)
+  await agent.get(`/api/posts/${post._id}`).expect(404)
+  await agent.delete(`/api/posts/${post._id}`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(404)
+})
+
+test('drafts and legacy archived posts can also be permanently deleted', async () => {
+  for (const archived of [false, true]) {
+    const draft = (await agent.post('/api/posts').set('X-CSRF-Token', csrf).send({ ...seed.articles[0], slug: `delete-draft-${archived}` }).expect(201)).body
+    const _id = new ObjectId(draft._id)
+    if (archived) await db.collection('posts').updateOne({ _id }, { $set: { archived: true } })
+    await agent.delete(`/api/posts/${draft._id}`).set('X-CSRF-Token', csrf).send({ revision: draft.revision }).expect(200)
+    assert.equal(await db.collection('posts').findOne({ _id }), null)
+  }
 })
 test('website content is validated and only changes publicly on publish', async () => {
   const draft = structuredClone(seed.content)
@@ -160,6 +184,79 @@ test('dedicated services API protects drafts, persists in MongoDB and isolates o
   const coldApp = createApp({ db, client, sessionStore: new session.MemoryStore() })
   const reloaded = (await request(coldApp).get('/api/public/services').expect(200)).body
   assert.deepEqual(reloaded.services, services)
+})
+
+test('service deletion requires the signed-in admin password, CSRF and current revision', async () => {
+  const before = await db.collection('content').findOne({ _id: 'main' })
+  const path = `/api/services/${before.draft.services[0].id}`
+  await request(app).delete(path).send({ revision: before.revision, password }).expect(401)
+  await agent.delete(path).send({ revision: before.revision, password }).expect(403)
+  await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: before.revision }).expect(400)
+  await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: before.revision, password: 'wrong' }).expect(403)
+  await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: before.revision - 1, password }).expect(409)
+  await agent.delete('/api/services/does-not-exist').set('X-CSRF-Token', csrf).send({ revision: before.revision, password }).expect(404)
+  assert.deepEqual(await db.collection('content').findOne({ _id: 'main' }), before)
+})
+
+test('bulk save and legacy publishing cannot bypass service password confirmation', async () => {
+  const before = await db.collection('content').findOne({ _id: 'main' })
+  const services = before.draft.services.slice(1)
+  await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: before.revision, data: services }).expect(400)
+  await agent.put('/api/content').set('X-CSRF-Token', csrf).send({ revision: before.revision, data: { ...before.draft, services } }).expect(400)
+  // An older saved draft must not remove a published service via publish either.
+  try {
+    await db.collection('content').updateOne({ _id: 'main' }, { $set: { 'draft.services': services } })
+    await agent.post('/api/services/publish').set('X-CSRF-Token', csrf).send({ revision: before.revision }).expect(400)
+    await agent.post('/api/content/publish').set('X-CSRF-Token', csrf).send({ revision: before.revision }).expect(400)
+  } finally { await db.collection('content').replaceOne({ _id: 'main' }, before) }
+})
+
+test('correct password permanently deletes both service copies without publishing other edits', async () => {
+  const before = await db.collection('content').findOne({ _id: 'main' })
+  const serviceId = before.draft.services[0].id
+  const result = (await agent.delete(`/api/services/${serviceId}`).set('X-CSRF-Token', csrf).send({ revision: before.revision, password }).expect(200)).body
+  const after = await db.collection('content').findOne({ _id: 'main' })
+  assert.deepEqual(after.draft.services, before.draft.services.filter(item => item.id !== serviceId))
+  assert.deepEqual(after.published.services, before.published.services.filter(item => item.id !== serviceId))
+  assert.deepEqual(after.draft.home, before.draft.home)
+  assert.deepEqual(after.published.home, before.published.home)
+  assert.equal(result.revision, before.revision + 1)
+  assert.equal((await request(app).get('/api/public/services')).body.services.some(item => item.id === serviceId), false)
+  assert.equal((await request(app).get('/api/public/content')).body.content.services.some(item => item.id === serviceId), false)
+  // A stale editor cannot resurrect the deleted service with an old save.
+  await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: before.revision, data: before.draft.services }).expect(409)
+  await agent.delete(`/api/services/${serviceId}`).set('X-CSRF-Token', csrf).send({ revision: result.revision, password }).expect(404)
+
+  const draftOnly = { ...after.draft.services[0], id: 'delete-private-service' }
+  const saved = (await agent.put('/api/services').set('X-CSRF-Token', csrf).send({ revision: after.revision, data: [...after.draft.services, draftOnly] }).expect(200)).body
+  await agent.delete(`/api/services/${draftOnly.id}`).set('X-CSRF-Token', csrf).send({ revision: saved.revision, password }).expect(200)
+  const final = await db.collection('content').findOne({ _id: 'main' })
+  assert.equal(final.draft.services.some(item => item.id === draftOnly.id), false)
+  assert.deepEqual(final.published, after.published)
+  assert.deepEqual(final.publishedAt, after.publishedAt)
+})
+
+test('service deletion preserves the required last service', async () => {
+  const before = await db.collection('content').findOne({ _id: 'main' })
+  const service = before.draft.services[0]
+  try {
+    await db.collection('content').updateOne({ _id: 'main' }, { $set: { 'draft.services': [service], 'published.services': [service] } })
+    await agent.delete(`/api/services/${service.id}`).set('X-CSRF-Token', csrf).send({ revision: before.revision, password }).expect(400)
+    assert.equal((await db.collection('content').findOne({ _id: 'main' })).draft.services.length, 1)
+  } finally { await db.collection('content').replaceOne({ _id: 'main' }, before) }
+})
+
+test('service password confirmation is rate limited independently of sign-in', async () => {
+  const before = await db.collection('content').findOne({ _id: 'main' })
+  const path = `/api/services/${before.draft.services[0].id}`
+  await db.collection('loginLimits').deleteMany({ _id: /^service-delete:/ })
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: before.revision, password: 'wrong' }).expect(403)
+  }
+  const limited = await agent.delete(path).set('X-CSRF-Token', csrf).send({ revision: before.revision, password }).expect(429)
+  assert.ok(Number(limited.headers['retry-after']) > 0)
+  assert.deepEqual(await db.collection('content').findOne({ _id: 'main' }), before)
+  await agent.get('/api/auth/me').expect(200)
 })
 
 test('uploads decode real images and reject disguised files', async () => {

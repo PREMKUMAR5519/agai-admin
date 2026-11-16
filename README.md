@@ -22,7 +22,7 @@ Administrator accounts live in the MongoDB `users` collection, with salted scryp
 
 - Overview with real content counts, recent activity and shortcuts.
 - Journal search and filters; article creation, editing, previews, drafting and publishing; visual rich-text blog editing with headings, bold/italic/underline, lists, quotes, links, alignment, and undo/redo; categories and unique URL slugs.
-- Separate draft and published copies. Saving a draft never changes public content. Archive/unpublish removes public content; restoring returns an article to drafts.
+- Separate draft and published copies. Saving a draft never changes public content. Unpublish removes public content while retaining the draft. Delete article permanently removes the entire MongoDB post record (draft and published copies), with no archive or restore. Deletion requires confirmation and the current revision; shared media remains in the media library. Legacy archived articles remain accessible for permanent deletion.
 - Service editor with Add service, category/icon selection, two image pickers and text limits. Existing IDs remain unchanged, and each added service receives a stable unique ID. Up to 50 services are supported; categories follow the website filters. The Home hero editor has been removed.
 - Media library and image picker. JPEG/PNG/WebP originals up to 20 MB and 40 megapixels are resized in the browser before upload. The backend validates and stores only WebP images, at most 1920 pixels on the longest edge and 512 KB, using quality 80 and further resizing when needed. Transparency and orientation are preserved; metadata is stripped. Images are public assets; avoid uploading confidential material.
 - Password changes, session invalidation, unsaved-change warnings and revision checks to prevent stale editors overwriting another editor's changes.
@@ -166,6 +166,9 @@ MongoDB is the source of truth: `content` / `_id: main` contains `draft.services
 - `GET /api/services`: authenticated service drafts, published services and revision.
 - `PUT /api/services`: authenticated, CSRF-protected save with `{ revision, data: [...] }`. Supports new and edited services together, validates data, and returns 409 on stale revisions.
 - `POST /api/services/publish`: authenticated, CSRF-protected publish with `{ revision }`; updates only published services.
+- `DELETE /api/services/:id`: authenticated, CSRF-protected permanent deletion with `{ revision, password }`. Verifies the signed-in administrator's MongoDB password hash, rate limits confirmation attempts, and removes the service from both draft and published copies. Bulk save/publish endpoints cannot remove services without this flow. Keeps at least one draft and published service; add and publish a replacement before deleting the last one.
+
+To delete a saved service, select it under **Website content**, click **Delete service**, and enter your admin password in the confirmation dialog. Incorrect passwords leave it unchanged. Other unsaved service edits are retained. Successful deletion updates both public APIs immediately; existing website visitors may see cached content until its one-minute cache expires. Shared images remain in the media library.
 
 The dashboard uses `ServicesContext` for API state, loading/retry and saves. The website uses its own typed `ServicesContext`: one shared request feeds homepage cards, service listings, filters, appointment choices, footer and chat service data. It keeps the previous data while loading, validates API responses, cancels superseded requests and offers retry on failure. New appointment links remain selected when services arrive after initial rendering.
 

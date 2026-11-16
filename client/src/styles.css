@@ -10,3 +10,10 @@
 @media(max-width:480px){.login-page{padding:20px}.login-form{padding:28px 24px}}
 .login-password-control{position:relative}.login-password-control input{padding-right:50px}.login-password-toggle{position:absolute;right:3px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:44px;height:44px;background:transparent;color:var(--muted);border-radius:6px}.login-password-toggle:hover{color:var(--blue)}.login-password-toggle:focus-visible{outline-offset:-3px}
 .content-form .service-new-heading{flex-wrap:wrap;gap:16px;padding:0 0 20px;margin-bottom:24px}.service-new-heading>div{flex:1 1 220px}.content-form .service-new-heading h2{margin:0 0 8px}.service-new-heading p{margin:0}
+.service-delete-section{margin-top:24px;padding-top:24px;border-top:1px solid var(--line)}
+.service-delete-dialog{width:min(480px,92vw)}
+.service-delete-dialog>p{line-height:1.7;overflow-wrap:anywhere}
+.service-delete-dialog>.muted{margin-top:12px}
+.service-delete-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
+.service-delete-confirm{background:#b43232;color:#fff}
+.service-delete-confirm:hover{background:#962626}

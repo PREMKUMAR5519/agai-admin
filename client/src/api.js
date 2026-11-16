@@ -16,4 +16,4 @@ export async function api(path, options = {}) {
 }
 export const assetUrl = value => value?.startsWith('/images/') ? `/website-assets${value}` : value
 export const dateLabel = value => value ? new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Not published'
-export const postStatus = post => post.archived ? 'Archived' : !post.published ? 'Draft' : post.revision !== post.publishedRevision ? 'Unpublished changes' : 'Published'
+export const postStatus = post => post.archived ? 'Unpublished' : !post.published ? 'Draft' : post.revision !== post.publishedRevision ? 'Unpublished changes' : 'Published'

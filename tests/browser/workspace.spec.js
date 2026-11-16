@@ -9,7 +9,7 @@ async function login(page) {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Welcome to your CMS.' })).toBeVisible()
 }
-test('journal draft, preview, publish, edit, and archive connect to the public website', async ({ page, context }) => {
+test('blog publishing and permanent deletion connect to the public website', async ({ page, context }) => {
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
   await login(page)
@@ -42,6 +42,12 @@ test('journal draft, preview, publish, edit, and archive connect to the public w
   await expect(editor.locator('strong')).toHaveText('what matters most')
   await expect(editor.locator('li')).toHaveCount(2)
   const publicPage = await context.newPage()
+  // Check each CMS change with a fresh visit, independent of the public cache TTL.
+  await publicPage.addInitScript(() => {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith('agai:public:v1:')) localStorage.removeItem(key)
+    }
+  })
   await publicPage.goto('http://127.0.0.1:5190/blogs/a-thoughtful-new-chapter')
   await expect(publicPage.getByRole('heading', { name: 'Article not found.' })).toBeVisible()
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
@@ -64,13 +70,24 @@ test('journal draft, preview, publish, edit, and archive connect to the public w
   await expect(page.getByRole('status')).toContainText('Article published')
   await publicPage.reload()
   await expect(publicPage.getByRole('heading', { level: 1 })).toHaveText('A revised thoughtful chapter')
-  page.once('dialog', dialog => dialog.accept())
-  await page.getByRole('button', { name: 'Archive article', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('Article archived')
+  const articleId = new URL(page.url()).pathname.split('/').at(-1)
+  page.once('dialog', dialog => dialog.dismiss())
+  await page.getByRole('button', { name: 'Delete blog permanently', exact: true }).click()
+  await expect(page.getByLabel('Article title', { exact: true })).toHaveValue('A revised thoughtful chapter')
+  expect((await page.request.get(`/api/posts/${articleId}`)).status()).toBe(200)
+  // Deleting with unsaved edits should require only the deletion confirmation.
+  await page.getByLabel('Article title', { exact: true }).fill('Unsaved edits to delete')
+  page.once('dialog', dialog => {
+    expect(dialog.message()).toContain('This cannot be undone')
+    return dialog.accept()
+  })
+  await page.getByRole('button', { name: 'Delete blog permanently', exact: true }).click()
+  await expect(page).toHaveURL(/\/journal$/)
+  await expect(page.getByRole('status').filter({ hasText: 'Article permanently deleted' })).toBeVisible()
+  expect((await page.request.get(`/api/posts/${articleId}`)).status()).toBe(404)
+  await expect(page.getByRole('heading', { name: 'A revised thoughtful chapter', exact: true })).toHaveCount(0)
   await publicPage.reload()
   await expect(publicPage.getByRole('heading', { name: 'Article not found.' })).toBeVisible()
-  await page.getByRole('button', { name: 'Restore to drafts', exact: true }).click()
-  await expect(page.getByRole('status')).toContainText('Restored as a draft')
   expect(errors).toEqual([])
 })
 test('services dashboard shows loading and can retry a failed API request', async ({ page }) => {
@@ -148,11 +165,57 @@ test('add service saves privately and publishes to listings, filters and appoint
   const website = await context.newPage()
   await website.goto('http://127.0.0.1:5190/services?category=wellness')
   await expect(website.getByRole('heading', { name: 'Movement coaching', exact: true })).toBeVisible()
-  await expect(website.locator(`#${added.id} img`)).toHaveAttribute('src', images.image)
+  expect(added.image).toBe(images.image)
+  // The website may render an optimized variant of the selected CMS image.
+  const serviceImage = website.locator(`#${added.id} img`)
+  await serviceImage.scrollIntoViewIfNeeded()
+  await expect.poll(() => serviceImage.evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true)
   await website.getByRole('link', { name: 'Book Appointment for Movement coaching', exact: true }).click()
   await expect(website.getByRole('combobox', { name: 'Service *', exact: true })).toContainText('Movement coaching')
   await expect(website.locator('.service-preview', { hasText: 'Movement coaching' })).toHaveCount(1)
   await expect(website.locator('.home-services .section-bottom')).toContainText(`${published.content.services.length} services`)
+})
+
+test('delete service verifies the admin password and preserves other unsaved edits', async ({ page, context }) => {
+  await login(page)
+  await page.getByRole('link', { name: 'Website content', exact: true }).click()
+  const original = (await (await page.request.get('/api/services')).json()).draft.services
+  const target = original[1]
+  await page.getByLabel('Service title', { exact: true }).fill('Unsaved edit to keep')
+  await page.getByLabel('Select a service').selectOption('1')
+  await page.getByRole('button', { name: 'Delete service', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Delete service?', exact: true })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByLabel('Admin password')).toHaveAttribute('type', 'password')
+  await expect(dialog.getByRole('button', { name: 'Delete service permanently' })).toBeDisabled()
+  await dialog.getByLabel('Admin password').fill('do-not-keep-this-password')
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await page.getByRole('button', { name: 'Delete service', exact: true }).click()
+  await expect(dialog.getByLabel('Admin password')).toHaveValue('')
+  await dialog.getByLabel('Admin password').fill('incorrect-password')
+  await dialog.getByRole('button', { name: 'Delete service permanently' }).click()
+  await expect(dialog.getByRole('alert')).toContainText('Admin password is incorrect')
+  expect((await (await page.request.get('/api/services')).json()).draft.services).toEqual(original)
+  await expect(dialog.getByLabel('Admin password')).toHaveValue('')
+  await dialog.getByLabel('Admin password').fill('Browser-test-password-2026!')
+  await dialog.getByRole('button', { name: 'Delete service permanently' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('status')).toContainText('Service permanently deleted')
+  await expect(page.getByLabel('Select a service').locator('option')).toHaveCount(original.length - 1)
+  await page.getByLabel('Select a service').selectOption('0')
+  await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Unsaved edit to keep')
+  const stored = (await (await page.request.get('/api/services')).json()).draft.services
+  expect(stored).toEqual(original.filter(item => item.id !== target.id))
+  expect((await (await page.request.get('/api/public/services')).json()).services.some(item => item.id === target.id)).toBe(false)
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('Draft saved')
+  await page.reload()
+  await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Unsaved edit to keep')
+  const website = await context.newPage()
+  await website.goto('http://127.0.0.1:5190/services')
+  await expect(website.locator(`#${original[0].id}`)).toBeVisible()
+  await expect(website.locator(`#${target.id}`)).toHaveCount(0)
 })
 
 test('mobile navigation, search, and sign-out work without horizontal overflow', async ({ page }) => {

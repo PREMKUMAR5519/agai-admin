@@ -14,7 +14,12 @@ export function ServicesProvider({ children }) {
     }
     return result
   }, [resource.setData])
-  return <ServicesContext.Provider value={{ ...resource, saveServices }}>{children}</ServicesContext.Provider>
+  const deleteService = useCallback(async (id, revision, password) => {
+    const result = await api(`/services/${encodeURIComponent(id)}`, { method: 'DELETE', body: { revision, password } })
+    resource.setData(result)
+    return result
+  }, [resource.setData])
+  return <ServicesContext.Provider value={{ ...resource, saveServices, deleteService }}>{children}</ServicesContext.Provider>
 }
 export function useServices() {
   const context = useContext(ServicesContext)

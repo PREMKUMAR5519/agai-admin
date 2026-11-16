@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { config, root, clientRoot } from './config.js'
 import { checkPassword, hashPassword, csrfToken } from './security.js'
-import { articleSchema, contentSchema, servicesSchema, editSchema, loginSchema, passwordSchema } from './schema.js'
+import { articleSchema, contentSchema, servicesSchema, editSchema, loginSchema, passwordSchema, deleteServiceSchema } from './schema.js'
 
 const fail = (status, message) => Object.assign(new Error(message), { status })
 const id = value => {
@@ -19,7 +19,7 @@ const id = value => {
   return new ObjectId(value)
 }
 const revision = req => {
-  if (!Number.isInteger(req.body.revision) || req.body.revision < 0) throw fail(400, 'A revision number is required. Reload this record.')
+  if (!Number.isInteger(req.body?.revision) || req.body.revision < 0) throw fail(400, 'A revision number is required. Reload this record.')
   return req.body.revision
 }
 const saveSession = req => new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()))
@@ -150,22 +150,31 @@ export function createApp({ db, client, sessionStore } = {}) {
     await activity(req, 'Saved draft', post.draft.title)
     res.json(post)
   })
+  app.delete('/api/posts/:id', async (req, res) => {
+    const filter = { _id: id(req.params.id), revision: revision(req) }
+    const post = await db.collection('posts').findOneAndDelete(filter)
+    if (!post) {
+      const exists = await db.collection('posts').findOne({ _id: filter._id }, { projection: { _id: 1 } })
+      if (!exists) throw fail(404, 'Article not found')
+      throw fail(409, 'Article changed in another window. Reload before deleting.')
+    }
+    await activity(req, 'Deleted article', post.draft.title)
+    res.json({ ok: true })
+  })
   app.post('/api/posts/:id/:action', async (req, res) => {
     const action = req.params.action
-    if (!['publish', 'unpublish', 'archive', 'restore'].includes(action)) throw fail(404, 'Action not found')
+    if (!['publish', 'unpublish'].includes(action)) throw fail(404, 'Action not found')
     const filter = { _id: id(req.params.id), revision: revision(req) }
     const existing = await db.collection('posts').findOne(filter)
     if (!existing) throw fail(409, 'Article changed. Reload before continuing.')
-    if (existing.archived && action !== 'restore') throw fail(400, 'Restore the archived article first')
+    if (existing.archived) throw fail(400, 'This legacy archived article can only be permanently deleted.')
     const nextRevision = existing.revision + 1
     const update = { updatedAt: new Date(), revision: nextRevision }
     if (action === 'publish') Object.assign(update, { published: articleSchema.parse(existing.draft), publishedRevision: nextRevision, publishedAt: new Date() })
-    if (action === 'unpublish' || action === 'archive') Object.assign(update, { published: null, publishedRevision: null })
-    if (action === 'archive') update.archived = true
-    if (action === 'restore') update.archived = false
+    if (action === 'unpublish') Object.assign(update, { published: null, publishedRevision: null })
     const post = await db.collection('posts').findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' })
     if (!post) throw fail(409, 'Article changed. Reload before continuing.')
-    await activity(req, ({ publish: 'Published', unpublish: 'Unpublished', archive: 'Archived', restore: 'Restored' })[action], post.draft.title)
+    await activity(req, ({ publish: 'Published', unpublish: 'Unpublished' })[action], post.draft.title)
     res.json(post)
   })
   // One MongoDB record remains canonical for both legacy content and service APIs.
@@ -174,6 +183,11 @@ export function createApp({ db, client, sessionStore } = {}) {
     revision: content.revision,
     publishedRevision: JSON.stringify(content.draft.services) === JSON.stringify(content.published?.services) ? content.revision : null,
   })
+  function requireServiceDeletionFlow(existing, services) {
+    const ids = new Set(services.map(service => service.id))
+    const saved = [...existing.draft.services, ...(existing.published?.services || [])]
+    if (saved.some(service => !ids.has(service.id))) throw fail(400, 'Use Delete service and confirm your admin password to remove a saved service.')
+  }
   app.get('/api/services', async (_req, res) => {
     const content = await db.collection('content').findOne({ _id: 'main' })
     if (!content) throw fail(503, 'Run npm run setup to initialize services')
@@ -181,6 +195,9 @@ export function createApp({ db, client, sessionStore } = {}) {
   })
   app.put('/api/services', async (req, res) => {
     const input = editSchema(servicesSchema).parse(req.body)
+    const existing = await db.collection('content').findOne({ _id: 'main', revision: input.revision })
+    if (!existing) throw fail(409, 'Services changed in another window. Reload before saving.')
+    requireServiceDeletionFlow(existing, input.data)
     const content = await db.collection('content').findOneAndUpdate({ _id: 'main', revision: input.revision },
       { $set: { 'draft.services': input.data, updatedAt: new Date() }, $inc: { revision: 1 } }, { returnDocument: 'after' })
     if (!content) throw fail(409, 'Services changed in another window. Reload before saving.')
@@ -192,12 +209,36 @@ export function createApp({ db, client, sessionStore } = {}) {
     const existing = await db.collection('content').findOne(filter)
     if (!existing) throw fail(409, 'Services changed. Reload before publishing.')
     const services = servicesSchema.parse(existing.draft.services)
+    requireServiceDeletionFlow(existing, services)
     const published = { ...existing.published, services }
     const update = { 'published.services': services, publishedAt: new Date() }
     if (JSON.stringify(published) === JSON.stringify(existing.draft)) update.publishedRevision = existing.revision
     const content = await db.collection('content').findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' })
     if (!content) throw fail(409, 'Services changed. Reload before publishing.')
     await activity(req, 'Published', 'Services')
+    res.json(serviceRecord(content))
+  })
+  app.delete('/api/services/:id', loginLimit(db, { scope: 'service-delete', message: 'Too many password confirmation attempts. Try again in 15 minutes.' }), async (req, res) => {
+    const input = deleteServiceSchema.parse(req.body)
+    if (!(await checkPassword(input.password, req.user.passwordHash))) throw fail(403, 'Admin password is incorrect. Service was not deleted.')
+    const existing = await db.collection('content').findOne({ _id: 'main', revision: input.revision })
+    if (!existing) throw fail(409, 'Services changed in another window. Reload before deleting.')
+    const service = [...existing.draft.services, ...(existing.published?.services || [])].find(item => item.id === req.params.id)
+    if (!service) throw fail(404, 'Service not found')
+    const services = existing.draft.services.filter(item => item.id !== service.id)
+    const publishedServices = existing.published?.services?.filter(item => item.id !== service.id)
+    if (!services.length || (publishedServices && !publishedServices.length)) throw fail(400, 'Keep at least one service. Add and publish a replacement before deleting this service.')
+    const nextRevision = existing.revision + 1
+    const update = { 'draft.services': services, revision: nextRevision, updatedAt: new Date() }
+    const removedPublished = publishedServices?.length !== existing.published?.services?.length
+    if (removedPublished) Object.assign(update, { 'published.services': publishedServices, publishedAt: new Date() })
+    const published = existing.published ? { ...existing.published, services: publishedServices } : null
+    if (JSON.stringify({ ...existing.draft, services }) === JSON.stringify(published)) update.publishedRevision = nextRevision
+    // Publishing can change the public copy without changing the draft revision.
+    const filter = { _id: 'main', revision: input.revision, publishedAt: existing.publishedAt ?? null }
+    const content = await db.collection('content').findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' })
+    if (!content) throw fail(409, 'Services changed in another window. Reload before deleting.')
+    await activity(req, 'Deleted service', service.title)
     res.json(serviceRecord(content))
   })
   app.get('/api/content', async (_req, res) => {
@@ -207,6 +248,9 @@ export function createApp({ db, client, sessionStore } = {}) {
   })
   app.put('/api/content', async (req, res) => {
     const input = editSchema(contentSchema).parse(req.body)
+    const existing = await db.collection('content').findOne({ _id: 'main', revision: input.revision })
+    if (!existing) throw fail(409, 'Website content changed in another window. Reload before saving.')
+    requireServiceDeletionFlow(existing, input.data.services)
     const content = await db.collection('content').findOneAndUpdate({ _id: 'main', revision: input.revision }, { $set: { draft: input.data, updatedAt: new Date() }, $inc: { revision: 1 } }, { returnDocument: 'after' })
     if (!content) throw fail(409, 'Website content changed in another window. Reload before saving.')
     await activity(req, 'Saved draft', 'Website content')
@@ -216,6 +260,7 @@ export function createApp({ db, client, sessionStore } = {}) {
     const filter = { _id: 'main', revision: revision(req) }
     const existing = await db.collection('content').findOne(filter)
     if (!existing) throw fail(409, 'Website content changed. Reload before publishing.')
+    requireServiceDeletionFlow(existing, existing.draft.services)
     const content = await db.collection('content').findOneAndUpdate(filter, { $set: { published: contentSchema.parse(existing.draft), publishedRevision: existing.revision, publishedAt: new Date() } }, { returnDocument: 'after' })
     if (!content) throw fail(409, 'Website content changed. Reload before publishing.')
     await activity(req, 'Published', 'Website content')
