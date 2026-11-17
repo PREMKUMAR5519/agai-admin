@@ -1,6 +1,6 @@
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import request from 'supertest'
 import session from 'express-session'
@@ -12,6 +12,9 @@ import { createApp } from '../src/app.js'
 import { checkPassword, hashPassword } from '../src/security.js'
 import { config, root } from '../src/config.js'
 import { articleSchema, contentSchema } from '../src/schema.js'
+import { IMAGE_STORAGE_LIMIT } from '../src/media-storage.js'
+import { optimizeImage } from '../src/optimize-image.js'
+import { deleteMedia } from '../src/delete-media.js'
 
 const databaseName = `agai_cms_test_${Date.now()}`
 const password = 'Test-only-password-2026!'
@@ -109,6 +112,69 @@ test('permanent deletion requires authentication, CSRF and the current revision'
   await agent.post(`${path}/restore`).set('X-CSRF-Token', csrf).send({ revision: post.revision }).expect(404)
   assert.ok(await db.collection('posts').findOne({ _id: new ObjectId(post._id) }))
   assert.equal((await request(app).get('/api/public/content')).body.articles.length, 1)
+})
+
+test('Turnstile config exposes only the site key and production requires both keys', async () => {
+  const original = { production: config.production, turnstileSiteKey: config.turnstileSiteKey, turnstileSecretKey: config.turnstileSecretKey }
+  try {
+    Object.assign(config, { production: false, turnstileSiteKey: '', turnstileSecretKey: '' })
+    assert.deepEqual((await request(app).get('/api/auth/config').expect(200)).body, { required: false, siteKey: '' })
+    Object.assign(config, { turnstileSiteKey: 'test-site-key', turnstileSecretKey: 'test-secret-key' })
+    const result = await request(app).get('/api/auth/config').expect(200)
+    assert.deepEqual(result.body, { required: true, siteKey: 'test-site-key' })
+    assert.equal(result.text.includes('test-secret-key'), false)
+    assert.equal(result.headers['cache-control'], 'no-store')
+    assert.match(result.headers['content-security-policy'], /script-src[^;]*https:\/\/challenges.cloudflare.com/)
+    assert.match(result.headers['content-security-policy'], /frame-src https:\/\/challenges.cloudflare.com/)
+    for (const [site, secret] of [['', ''], ['test-site-key', ''], ['', 'test-secret-key']]) {
+      Object.assign(config, { production: true, turnstileSiteKey: site, turnstileSecretKey: secret })
+      await request(app).get('/api/auth/config').expect(503)
+      await request(app).post('/api/auth/login').send({ email: 'test@example.com', password }).expect(503)
+    }
+  } finally { Object.assign(config, original); await db.collection('loginLimits').deleteMany({}) }
+})
+
+test('login verifies Turnstile tokens server-side and rejects failures before authentication', async () => {
+  const original = { turnstileSiteKey: config.turnstileSiteKey, turnstileSecretKey: config.turnstileSecretKey }
+  let validation = { success: true, action: 'admin-login', hostname: 'localhost' }
+  let calls = 0
+  let unavailable = false
+  const protectedApp = createApp({ db, client, sessionStore: new session.MemoryStore(), turnstileFetch: async (url, options) => {
+    calls++
+    assert.equal(url, 'https://challenges.cloudflare.com/turnstile/v0/siteverify')
+    assert.equal(options.method, 'POST')
+    assert.deepEqual(JSON.parse(options.body), { secret: 'test-secret-key', response: 'test-token' })
+    assert.ok(options.signal instanceof AbortSignal)
+    if (unavailable) throw new Error('Simulated network timeout')
+    return { ok: true, json: async () => validation }
+  } })
+  try {
+    Object.assign(config, { turnstileSiteKey: 'test-site-key', turnstileSecretKey: 'test-secret-key' })
+    const loginBody = { email: 'test@example.com', password }
+    await request(protectedApp).post('/api/auth/login').send(loginBody).expect(400)
+    await request(protectedApp).post('/api/auth/login').send({ ...loginBody, turnstileToken: 'x'.repeat(2049) }).expect(400)
+    assert.equal(calls, 0)
+    for (const invalid of [
+      { success: false, 'error-codes': ['timeout-or-duplicate'] },
+      { success: false, 'error-codes': ['invalid-input-response'] },
+      { success: true, action: 'another-form', hostname: 'localhost' },
+      { success: true, action: 'admin-login', hostname: 'untrusted.example' },
+      { success: 'true', action: 'admin-login', hostname: 'localhost' },
+      null,
+    ]) {
+      validation = invalid
+      const denied = request.agent(protectedApp)
+      await denied.post('/api/auth/login').send({ ...loginBody, turnstileToken: 'test-token' }).expect(403)
+      await denied.get('/api/auth/me').expect(401)
+    }
+    unavailable = true
+    await request(protectedApp).post('/api/auth/login').send({ ...loginBody, turnstileToken: 'test-token' }).expect(503)
+    unavailable = false; validation = { success: true, action: 'admin-login', hostname: 'localhost' }
+    await request(protectedApp).post('/api/auth/login').send({ ...loginBody, password: 'wrong', turnstileToken: 'test-token' }).expect(401)
+    const signedIn = request.agent(protectedApp)
+    await signedIn.post('/api/auth/login').send({ ...loginBody, turnstileToken: 'test-token' }).expect(200)
+    await signedIn.get('/api/auth/me').expect(200)
+  } finally { Object.assign(config, original); await db.collection('loginLimits').deleteMany({}) }
 })
 
 test('permanent deletion removes the entire database record and public article', async () => {
@@ -259,10 +325,27 @@ test('service password confirmation is rate limited independently of sign-in', a
   await agent.get('/api/auth/me').expect(200)
 })
 
+test('image storage is private and includes uploads saved before quotas existed', async () => {
+  await request(app).get('/api/media/storage').expect(401)
+  const size = 2 * 1024 * 1024
+  const legacy = await db.collection('media').insertOne({ filename: 'legacy-storage.webp', size })
+  try {
+    const storage = (await agent.get('/api/media/storage').expect(200)).body
+    assert.deepEqual(storage, { usedBytes: size, limitBytes: IMAGE_STORAGE_LIMIT, remainingBytes: IMAGE_STORAGE_LIMIT - size, imageCount: 1 })
+  } finally {
+    await db.collection('media').deleteOne({ _id: legacy.insertedId })
+    await db.collection('storageQuotas').deleteOne({ _id: 'uploaded-images' })
+  }
+})
+
 test('uploads decode real images and reject disguised files', async () => {
   await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', Buffer.from('<script>alert(1)</script>'), { filename: 'fake.jpg', contentType: 'image/jpeg' }).expect(400)
   const buffer = await sharp({ create: { width: 10, height: 10, channels: 3, background: '#0756aa' } }).png().toBuffer()
   const uploaded = (await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'test.png').expect(201)).body
+  const storage = (await agent.get('/api/media/storage').expect(200)).body
+  assert.equal(storage.usedBytes, uploaded.size)
+  assert.equal(storage.remainingBytes, IMAGE_STORAGE_LIMIT - uploaded.size)
+  assert.equal(storage.imageCount, 1)
   assert.match(uploaded.filename, /^[\w-]+\.webp$/)
   assert.equal(uploaded.width, 10)
   await request(app).get(`/uploads/${uploaded.filename}`).expect(200).expect('Content-Type', /image\/webp/)
@@ -272,7 +355,133 @@ test('uploads decode real images and reject disguised files', async () => {
   const media = await agent.get('/api/media').expect(200)
   assert.equal(media.body[0].data, undefined)
   await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', Buffer.alloc(3 * 1024 * 1024 + 1), 'large.png').expect(400)
+  assert.deepEqual((await agent.get('/api/media/storage')).body, storage)
 })
+
+test('concurrent image uploads cannot exceed the 300 MB limit', async () => {
+  const buffer = await sharp({ create: { width: 15, height: 15, channels: 3, background: '#224477' } }).png().toBuffer()
+  const { data } = await optimizeImage(buffer)
+  const count = await db.collection('media').countDocuments()
+  const files = await db.collection('mediaFiles').countDocuments()
+  // Simulate a nearly full library without allocating 300 MB in the test database.
+  await db.collection('storageQuotas').updateOne({ _id: 'uploaded-images' }, { $set: { usedBytes: IMAGE_STORAGE_LIMIT - data.length } })
+  try {
+    const results = await Promise.all([0, 1].map(index => agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, `concurrent-${index}.png`)))
+    assert.deepEqual(results.map(result => result.status).sort(), [201, 409])
+    assert.match(results.find(result => result.status === 409).body.message, /300 MB/)
+    assert.equal(await db.collection('media').countDocuments(), count + 1)
+    assert.equal(await db.collection('mediaFiles').countDocuments(), files + 1)
+    const storage = (await agent.get('/api/media/storage')).body
+    assert.equal(storage.usedBytes, IMAGE_STORAGE_LIMIT)
+    assert.equal(storage.remainingBytes, 0)
+    await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'over-limit.png').expect(409)
+  } finally {
+    const [actual] = await db.collection('media').aggregate([{ $group: { _id: null, size: { $sum: '$size' } } }]).toArray()
+    await db.collection('storageQuotas').updateOne({ _id: 'uploaded-images' }, { $set: { usedBytes: actual.size } })
+  }
+})
+
+test('failed image and metadata writes release reserved storage and remove partial uploads', async () => {
+  const buffer = await sharp({ create: { width: 12, height: 12, channels: 3, background: '#667788' } }).png().toBuffer()
+  const before = (await agent.get('/api/media/storage')).body
+  const fileCount = await db.collection('mediaFiles').countDocuments()
+  for (const failingCollection of ['mediaFiles', 'media']) {
+    const failingDb = { databaseName: db.databaseName, collection(name) {
+      const collection = db.collection(name)
+      return name !== failingCollection ? collection : new Proxy(collection, { get(target, key) {
+        if (key === 'insertOne') return async () => { throw Object.assign(new Error('Simulated storage failure'), { status: 503 }) }
+        const value = target[key]
+        return typeof value === 'function' ? value.bind(target) : value
+      } })
+    } }
+    const failingAgent = request.agent(createApp({ db: failingDb, client, sessionStore: new session.MemoryStore() }))
+    const login = await failingAgent.post('/api/auth/login').send({ email: 'test@example.com', password }).expect(200)
+    await failingAgent.post('/api/media').set('X-CSRF-Token', login.body.csrf).attach('image', buffer, 'failed.png').expect(503)
+    assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+    assert.equal(await db.collection('mediaFiles').countDocuments(), fileCount)
+  }
+})
+test('image deletion verifies the admin password and removes metadata, bytes, local copies and quota', async () => {
+  const before = (await agent.get('/api/media/storage')).body
+  const buffer = await sharp({ create: { width: 12, height: 12, channels: 3, background: '#667788' } }).png().toBuffer()
+  const media = (await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'delete-me.png').expect(201)).body
+  const path = `/api/media/${media._id}`
+  const localPath = resolve(config.uploads, media.filename)
+  mkdirSync(config.uploads, { recursive: true })
+  writeFileSync(localPath, Buffer.from((await db.collection('mediaFiles').findOne({ _id: media.filename })).data.buffer))
+  try {
+    await request(app).delete(path).send({ password }).expect(401)
+    await agent.delete(path).send({ password }).expect(403)
+    await agent.delete(path).set('X-CSRF-Token', csrf).send({}).expect(400)
+    await agent.delete('/api/media/invalid').set('X-CSRF-Token', csrf).send({ password }).expect(400)
+    const wrong = await agent.delete(path).set('X-CSRF-Token', csrf).send({ password: 'wrong-password' }).expect(403)
+    assert.match(wrong.body.message, /Admin password is incorrect/)
+    assert.ok(await db.collection('media').findOne({ _id: new ObjectId(media._id) }))
+    assert.ok(await db.collection('mediaFiles').findOne({ _id: media.filename }))
+    assert.equal((await agent.get('/api/media/storage')).body.usedBytes, before.usedBytes + media.size)
+    const deleted = await agent.delete(path).set('X-CSRF-Token', csrf).send({ password }).expect(200)
+    assert.equal(deleted.body.deletedId, media._id)
+    assert.equal(await db.collection('media').findOne({ _id: new ObjectId(media._id) }), null)
+    assert.equal(await db.collection('mediaFiles').findOne({ _id: media.filename }), null)
+    assert.equal(existsSync(localPath), false)
+    await request(app).get(`/uploads/${media.filename}`).expect(404)
+    assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+    await agent.delete(path).set('X-CSRF-Token', csrf).send({ password }).expect(404)
+    assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+  } finally { rmSync(localPath, { force: true }) }
+})
+
+test('simultaneous image deletions free storage exactly once and leave other images intact', async () => {
+  const before = (await agent.get('/api/media/storage')).body
+  const buffer = await sharp({ create: { width: 12, height: 12, channels: 3, background: '#778899' } }).png().toBuffer()
+  const uploaded = (await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'concurrent-delete.png').expect(201)).body
+  const results = await Promise.all([0, 1].map(() => agent.delete(`/api/media/${uploaded._id}`).set('X-CSRF-Token', csrf).send({ password })))
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 404])
+  assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+})
+
+test('failed image cleanup or quota release keeps a retryable library entry', async () => {
+  const before = (await agent.get('/api/media/storage')).body
+  const buffer = await sharp({ create: { width: 12, height: 12, channels: 3, background: '#998877' } }).png().toBuffer()
+  for (const [collectionName, method] of [['mediaFiles', 'deleteOne'], ['storageQuotas', 'updateOne']]) {
+    const uploaded = (await agent.post('/api/media').set('X-CSRF-Token', csrf).attach('image', buffer, 'retry-delete.png').expect(201)).body
+    const failingDb = { collection(name) {
+      const collection = db.collection(name)
+      return name !== collectionName ? collection : new Proxy(collection, { get(target, key) {
+        if (key === method) return async () => { throw new Error('Simulated cleanup failure') }
+        const value = target[key]
+        return typeof value === 'function' ? value.bind(target) : value
+      } })
+    } }
+    const mediaId = new ObjectId(uploaded._id)
+    await assert.rejects(deleteMedia(failingDb, mediaId, config), /Please try deleting it again/)
+    assert.ok(await db.collection('media').findOne({ _id: mediaId }))
+    assert.equal((await agent.get('/api/media/storage')).body.usedBytes, before.usedBytes + uploaded.size)
+    await agent.delete(`/api/media/${uploaded._id}`).set('X-CSRF-Token', csrf).send({ password }).expect(200)
+    assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+  }
+})
+
+test('image password confirmation is rate limited and cannot escape the uploads directory', async () => {
+  const before = (await agent.get('/api/media/storage')).body
+  const unsafe = await db.collection('media').insertOne({ filename: '../outside.webp', size: 0 })
+  try {
+    await agent.delete(`/api/media/${unsafe.insertedId}`).set('X-CSRF-Token', csrf).send({ password }).expect(400)
+    assert.ok(await db.collection('media').findOne({ _id: unsafe.insertedId }))
+    await db.collection('loginLimits').deleteMany({ _id: /^media-delete:/ })
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await agent.delete(`/api/media/${unsafe.insertedId}`).set('X-CSRF-Token', csrf).send({ password: 'wrong' }).expect(403)
+    }
+    const limited = await agent.delete(`/api/media/${unsafe.insertedId}`).set('X-CSRF-Token', csrf).send({ password }).expect(429)
+    assert.ok(Number(limited.headers['retry-after']) > 0)
+    await agent.get('/api/auth/me').expect(200)
+  } finally {
+    await db.collection('media').deleteOne({ _id: unsafe.insertedId })
+    await db.collection('loginLimits').deleteMany({ _id: /^media-delete:/ })
+  }
+  assert.deepEqual((await agent.get('/api/media/storage')).body, before)
+})
+
 test('password changes invalidate other sessions and logout revokes access', async () => {
   const other = request.agent(app)
   await other.post('/api/auth/login').send({ email: 'test@example.com', password }).expect(200)
@@ -294,13 +503,13 @@ test('login throttling is shared by separate application instances', async () =>
 
 test('Vercel HTTPS proxy supports secure sessions and MongoDB-backed media', async () => {
   await db.collection('loginLimits').deleteMany({})
-  const original = { production: config.production, vercel: config.vercel }
-  Object.assign(config, { production: true, vercel: true })
+  const original = { production: config.production, vercel: config.vercel, turnstileSiteKey: config.turnstileSiteKey, turnstileSecretKey: config.turnstileSecretKey }
+  Object.assign(config, { production: true, vercel: true, turnstileSiteKey: 'test-site-key', turnstileSecretKey: 'test-secret-key' })
   try {
-    const serverless = createApp({ db, client, sessionStore: new session.MemoryStore() })
+    const serverless = createApp({ db, client, sessionStore: new session.MemoryStore(), turnstileFetch: async () => ({ ok: true, json: async () => ({ success: true, hostname: new URL(config.publicUrl).hostname, action: 'admin-login' }) }) })
     const login = await request(serverless).post('/api/auth/login')
       .set('X-Forwarded-Proto', 'https').set('Origin', config.publicUrl)
-      .send({ email: 'test@example.com', password: 'A-new-private-password-2026!' }).expect(200)
+      .send({ email: 'test@example.com', password: 'A-new-private-password-2026!', turnstileToken: 'test-token' }).expect(200)
     assert.match(login.headers['set-cookie'][0], /; Secure/)
     const cookie = login.headers['set-cookie'][0].split(';')[0]
     await request(serverless).get('/api/auth/me').set('X-Forwarded-Proto', 'https').set('Cookie', cookie).expect(200)

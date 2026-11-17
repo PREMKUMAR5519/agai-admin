@@ -1,5 +1,5 @@
 ﻿import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Eye, FileText, Image as ImageIcon, List, Plus, Save, Search, Send, Trash2, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, FileText, Image as ImageIcon, List, Plus, Save, Search, Send, Trash2, X } from 'lucide-react'
 import DeleteServiceDialog from './DeleteServiceDialog'
 import { useServices } from './ServicesContext'
 import { assetUrl } from './api'
@@ -24,7 +24,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
 const categoryName = value => serviceCategories.find(category => category.value === value)?.label || value
 
 export default function ServiceContentForm({ initial }) {
-  const { data: record, saveServices, deleteService } = useServices()
+  const { data: record, saveServices, publishServices, deleteService } = useServices()
   const [draft, setDraft] = useState(initial.draft)
   const [selected, setSelected] = useState(0)
   const [section, setSection] = useState('overview')
@@ -38,6 +38,8 @@ export default function ServiceContentForm({ initial }) {
   const [invalidTarget, setInvalidTarget] = useState(null)
   const form = useRef(null)
   const feedback = useRef(null)
+  const editorHeading = useRef(null)
+  const [focusEditor, setFocusEditor] = useState(0)
   const dirty = !same(draft, record.draft)
   useUnsaved(dirty)
   const current = draft.services[selected]
@@ -64,7 +66,20 @@ export default function ServiceContentForm({ initial }) {
     field?.scrollIntoView({ block: 'center', behavior: 'instant' })
   }, [invalidTarget])
 
-  function selectService(index) { setSelected(index); setError(''); setInvalidTarget(null); setLibraryOpen(false) }
+  useEffect(() => {
+    if (!focusEditor) return
+    editorHeading.current?.focus({ preventScroll: true })
+    editorHeading.current?.scrollIntoView({ block: 'nearest' })
+  }, [focusEditor])
+
+  useEffect(() => {
+    if ((notice || error) && !invalidTarget) feedback.current?.scrollIntoView({ block: 'nearest' })
+  }, [notice, error, invalidTarget])
+
+  function selectService(index) {
+    setSelected(index); setError(''); setInvalidTarget(null); setLibraryOpen(false)
+    setFocusEditor(value => value + 1)
+  }
   function change(key, value) {
     setDraft(previous => ({ ...previous, services: previous.services.map((item, index) => index === selected ? { ...item, [key]: value } : item) }))
     setNotice(''); setError(''); setInvalidTarget(null)
@@ -73,17 +88,18 @@ export default function ServiceContentForm({ initial }) {
     if (busy || hasNew || draft.services.length >= maxServices) return
     const service = { id: `service-${crypto.randomUUID()}`, category: 'rehabilitation', icon: 'activity', title: '', shortTitle: '', intro: '', description: '', forYou: '', focus: [''], image: '', previewImage: '' }
     setDraft(previous => ({ ...previous, services: [...previous.services, service] }))
-    setSelected(draft.services.length); setSection('overview'); setQuery(''); setFilter('All services'); setNotice(''); setError('')
+    setSelected(draft.services.length); setSection('overview'); setQuery(''); setFilter('All services'); setLibraryOpen(false); setNotice(''); setError('')
     setInvalidTarget({ id: 'service-field-title' })
   }
   function cancelNew() {
     if (!isNew) return
     setDraft(previous => ({ ...previous, services: previous.services.filter((_, index) => index !== selected) }))
-    setSelected(0); setError(''); setNotice(''); setInvalidTarget(null)
+    setSelected(0); setError(''); setNotice(''); setInvalidTarget(null); setSection('overview')
+    setFocusEditor(value => value + 1)
   }
   function showInvalid(index, tab, id, message) {
-    setSelected(index); setSection(tab); setQuery(''); setFilter('All services')
-    setError(`${draft.services[index].shortTitle || 'New service'}: ${message}`); setNotice(''); setInvalidTarget({ id })
+    setSelected(index); setSection(tab); setQuery(''); setFilter('All services'); setLibraryOpen(false)
+    setError(`${draft.services[index].shortTitle || 'New service'}: ${message}`); setNotice(''); setInvalidTarget({ id, tab, message })
   }
   async function save(publish) {
     if (busy) return
@@ -101,13 +117,28 @@ export default function ServiceContentForm({ initial }) {
       if (!item.image.trim() || !item.previewImage.trim()) {
         showInvalid(index, 'images', !item.image.trim() ? 'service-image-url' : 'service-preview-url', 'Choose both a service image and a homepage preview image.'); return
       }
+      for (const [key, id] of [['image', 'service-image-url'], ['previewImage', 'service-preview-url']]) {
+        const value = item[key].trim()
+        if (value.length > 2000 || !(/^https?:\/\/[^\s]+$/i.test(value) || /^\/(?:images|uploads)\/[\w./-]+$/.test(value))) {
+          showInvalid(index, 'images', id, 'Choose an image from the library or use a complete http:// or https:// image URL.'); return
+        }
+      }
     }
     setBusy(publish ? 'publish' : 'save'); setError(''); setNotice('')
+    let draftSaved = !dirty
     try {
-      const result = await saveServices(draft.services, record.revision, publish)
+      let result = record
+      if (dirty) {
+        result = await saveServices(draft.services, record.revision)
+        setDraft(result.draft)
+        draftSaved = true
+      }
+      if (publish) result = await publishServices(result.revision)
       setDraft(result.draft)
       setNotice(publish ? 'Website content published. Your service updates are ready for visitors.' : 'Draft saved. Your published website content is unchanged.')
-    } catch (error) { setError(error.message) } finally { setBusy(''); feedback.current?.scrollIntoView({ block: 'nearest' }) }
+    } catch (error) {
+      setError(publish && draftSaved ? `Your draft is saved, but publishing failed. ${error.message} Try Publish changes again.` : error.message)
+    } finally { setBusy('') }
   }
   async function confirmDelete(password) {
     setBusy('delete'); setError(''); setNotice('')
@@ -120,8 +151,14 @@ export default function ServiceContentForm({ initial }) {
   }
   function renderField(key) {
     const { label, max, rows } = serviceFields.find(field => field.key === key)
-    return <Field key={key} id={`service-field-${key}`} label={label} required maxLength={max} value={current[key]} textarea={!!rows} rows={rows} hint={`${fieldHelp[key]} ${current[key].length} / ${max}`} aria-invalid={invalidTarget?.id === `service-field-${key}` && !!error} onChange={event => change(key, event.target.value)}/>
+    return <Field key={key} id={`service-field-${key}`} label={label} required maxLength={max} value={current[key]} textarea={!!rows} rows={rows} hint={`${fieldHelp[key]} ${current[key].length} / ${max}`} error={fieldError(`service-field-${key}`)} onChange={event => change(key, event.target.value)}/>
   }
+  function fieldError(id) { return invalidTarget?.id === id ? invalidTarget.message : undefined }
+  function goToSection(index) {
+    setSection(sections[index].id)
+    document.getElementById(`service-tab-${sections[index].id}`)?.focus()
+  }
+  const sectionIndex = sections.findIndex(item => item.id === section)
   function moveTab(event, index) {
     let next
     if (event.key === 'ArrowRight') next = (index + 1) % sections.length
@@ -138,7 +175,7 @@ export default function ServiceContentForm({ initial }) {
       <button className="button secondary" onClick={addService} disabled={!!busy || hasNew || draft.services.length >= maxServices}><Plus size={17}/>Add service</button>
     </PageHead>
     <div className="services-savebar">
-      <div><strong>{unsavedCount ? `${unsavedCount} service${unsavedCount === 1 ? '' : 's'} with unsaved edits` : unpublishedCount ? 'Saved drafts ready to publish' : 'All services are up to date'}</strong><span>Save keeps edits private. Publish updates all service drafts.</span></div>
+      <div><strong>{unsavedCount ? `${unsavedCount} service${unsavedCount === 1 ? '' : 's'} with unsaved edits` : unpublishedCount ? 'Saved drafts ready to publish' : 'All services are up to date'}</strong><span>Save all edits privately. Publish makes all service drafts live.</span></div>
       <div className="services-save-actions"><button className="button secondary" onClick={() => save(false)} disabled={!!busy || !dirty}><Save size={16}/>{busy === 'save' ? 'Saving…' : 'Save draft'}</button><button className="button primary" onClick={() => save(true)} disabled={!!busy || (!dirty && !unpublishedCount)}><Send size={16}/>{busy === 'publish' ? 'Publishing…' : 'Publish changes'}</button></div>
     </div>
     <div ref={feedback} className="services-feedback"><Notice error>{error}</Notice><Notice>{notice}</Notice></div>
@@ -153,13 +190,13 @@ export default function ServiceContentForm({ initial }) {
       </aside>
       <div className="services-editor-column">
         <section className="panel services-editor">
-          <header className="services-editor-heading"><div><span className="eyebrow">{isNew ? 'NEW SERVICE' : 'EDITING SERVICE'}</span><h2>{current.shortTitle || current.title || 'Give your service a name'}</h2><p>{categoryName(current.category)}</p></div><span className={`service-state state-${statusOf(current).toLowerCase()}`}>{statusOf(current)}</span></header>
+          <header ref={editorHeading} tabIndex={-1} className="services-editor-heading"><div><span className="eyebrow">{isNew ? 'NEW SERVICE' : 'EDITING SERVICE'}</span><h2>{current.shortTitle || current.title || 'Give your service a name'}</h2><p>{categoryName(current.category)}</p></div><span className={`service-state state-${statusOf(current).toLowerCase()}`}>{statusOf(current)}</span></header>
           {isNew && <div className="services-new-note"><span>Complete the details and save before adding another service.</span><button className="text-button" type="button" disabled={!!busy} onClick={cancelNew}><X size={15}/>Cancel new service</button></div>}
-          <div className="services-section-tabs" role="tablist" aria-label="Service editing sections">{sections.map(({ id, label, icon: Icon }, index) => <button key={id} id={`service-tab-${id}`} type="button" role="tab" aria-selected={section === id} aria-controls={`service-panel-${id}`} tabIndex={section === id ? 0 : -1} onKeyDown={event => moveTab(event, index)} onClick={() => setSection(id)}><Icon size={17}/>{label}</button>)}</div>
+          <div className="services-section-tabs" role="tablist" aria-label="Service editing sections">{sections.map(({ id, label, icon: Icon }, index) => <button key={id} id={`service-tab-${id}`} type="button" role="tab" className={invalidTarget?.tab === id ? 'has-error' : undefined} aria-selected={section === id} aria-controls={`service-panel-${id}`} tabIndex={section === id ? 0 : -1} onKeyDown={event => moveTab(event, index)} onClick={() => setSection(id)}><Icon size={17}/>{label}</button>)}</div>
           <form ref={form} noValidate onSubmit={event => { event.preventDefault(); save(false) }}>
             <fieldset disabled={!!busy}>
               <div className="services-tab-panel" id="service-panel-overview" role="tabpanel" aria-labelledby="service-tab-overview" hidden={section !== 'overview'}>
-                <div className="services-section-intro"><h3>Introduce this service</h3><p>Give visitors a clear name and a short, helpful introduction.</p></div>
+                <div className="services-section-intro"><h3>Introduce this service</h3><p>Give visitors a clear name and a short introduction. All fields are required.</p></div>
                 {renderField('title')}{renderField('shortTitle')}{renderField('intro')}
                 <div className="form-grid"><div className="field"><label htmlFor="service-category">Service category</label><select id="service-category" value={current.category} onChange={event => change('category', event.target.value)}>{serviceCategories.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div><div className="field"><label htmlFor="service-icon">Service icon</label><select id="service-icon" value={current.icon} onChange={event => change('icon', event.target.value)}>{serviceIcons.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div></div>
               </div>
@@ -167,12 +204,12 @@ export default function ServiceContentForm({ initial }) {
                 <div className="services-section-intro"><h3>Help visitors understand your care</h3><p>Keep the language simple and focus on what matters to your visitors.</p></div>
                 {renderField('description')}{renderField('forYou')}
                 <div className="services-focus-heading"><h3>Care focus</h3><p>The key points shown as a list on your Services page. Add up to 8.</p></div>
-                {current.focus.map((value, index) => <div className="services-focus-row" key={`${current.id}-${index}`}><Field id={`service-focus-${index}`} label={`Care focus ${index + 1}`} value={value} required maxLength={300} hint={`${value.length} / 300 characters`} onChange={event => change('focus', current.focus.map((item, position) => position === index ? event.target.value : item))}/><button type="button" className="icon-button danger" aria-label={`Remove care focus ${index + 1}`} disabled={current.focus.length <= 1} onClick={() => change('focus', current.focus.filter((_, position) => position !== index))}><X size={17}/></button></div>)}
+                {current.focus.map((value, index) => <div className="services-focus-row" key={`${current.id}-${index}`}><Field id={`service-focus-${index}`} label={`Care focus ${index + 1}`} value={value} required maxLength={300} hint={`${value.length} / 300 characters`} error={fieldError(`service-focus-${index}`)} onChange={event => change('focus', current.focus.map((item, position) => position === index ? event.target.value : item))}/><button type="button" className="icon-button danger" aria-label={`Remove care focus ${index + 1}`} disabled={current.focus.length <= 1} onClick={() => change('focus', current.focus.filter((_, position) => position !== index))}><X size={17}/></button></div>)}
                 <button className="button secondary" type="button" disabled={current.focus.length >= 8} onClick={() => change('focus', [...current.focus, ''])}><Plus size={16}/>Add care focus</button>
               </div>
               <div className="services-tab-panel" id="service-panel-images" role="tabpanel" aria-labelledby="service-tab-images" hidden={section !== 'images'}>
                 <div className="services-section-intro"><h3>Choose your images</h3><p>Pick an existing image from the media library or upload a new one.</p></div>
-                <div className="services-image-grid"><div><ImagePicker label="Service image" inputId="service-image-url" value={current.image} onChange={value => change('image', value)}/><p className="services-image-help">The main image on your Services page.</p></div><div><ImagePicker label="Homepage preview image" inputId="service-preview-url" value={current.previewImage} onChange={value => change('previewImage', value)}/><p className="services-image-help">The smaller image in the homepage service cards.</p></div></div>
+                <div className="services-image-grid"><div><ImagePicker key={`${current.id}-image`} label="Service image" inputId="service-image-url" value={current.image} error={fieldError('service-image-url')} onChange={value => change('image', value)}/><p className="services-image-help">The main image on your Services page.</p></div><div><ImagePicker key={`${current.id}-preview`} label="Homepage preview image" inputId="service-preview-url" value={current.previewImage} error={fieldError('service-preview-url')} onChange={value => change('previewImage', value)}/><p className="services-image-help">The smaller image in the homepage service cards.</p></div></div>
                 <button type="button" className="text-button" disabled={!current.image} onClick={() => change('previewImage', current.image)}>Use the service image for both</button>
               </div>
               <div className="services-tab-panel" id="service-panel-preview" role="tabpanel" aria-labelledby="service-tab-preview" hidden={section !== 'preview'}>
@@ -181,6 +218,7 @@ export default function ServiceContentForm({ initial }) {
               </div>
             </fieldset>
           </form>
+          <div className="services-section-footer"><span>Section {sectionIndex + 1} of {sections.length}</span><div><button type="button" className="button secondary" disabled={sectionIndex === 0} onClick={() => goToSection(sectionIndex - 1)}><ChevronLeft size={16}/>Previous</button>{sectionIndex < sections.length - 1 && <button type="button" className="button secondary" onClick={() => goToSection(sectionIndex + 1)}>Next: {sections[sectionIndex + 1].label}<ChevronRight size={16}/></button>}</div></div>
         </section>
         {!isNew && <section className="services-delete-card"><div><h3>Delete this service</h3><p>{lastService ? 'Add and publish a replacement before deleting your last service.' : 'Permanent deletion requires your admin password.'}</p></div><button className="button secondary danger" type="button" disabled={!!busy || lastService} onClick={() => setDeleteTarget(current)}><Trash2 size={16}/>Delete service</button></section>}
       </div>

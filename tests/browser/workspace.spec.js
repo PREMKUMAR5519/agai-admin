@@ -2,6 +2,8 @@ import { test, expect } from '@playwright/test'
 import sharp from 'sharp'
 import { randomBytes } from 'node:crypto'
 
+const websiteUrl = `http://127.0.0.1:${process.env.E2E_WEBSITE_PORT || 5190}`
+
 async function login(page) {
   await page.goto('/')
   await page.getByLabel('Email address').fill('editor@example.com')
@@ -48,7 +50,7 @@ test('blog publishing and permanent deletion connect to the public website', asy
       if (key.startsWith('agai:public:v1:')) localStorage.removeItem(key)
     }
   })
-  await publicPage.goto('http://127.0.0.1:5190/blogs/a-thoughtful-new-chapter')
+  await publicPage.goto(`${websiteUrl}/blogs/a-thoughtful-new-chapter`)
   await expect(publicPage.getByRole('heading', { name: 'Article not found.' })).toBeVisible()
   await page.getByRole('button', { name: 'Preview', exact: true }).click()
   await expect(page.locator('.article-preview h1')).toHaveText('A thoughtful new chapter')
@@ -170,7 +172,7 @@ test('add service saves privately and publishes to listings, filters and appoint
   const added = published.content.services.at(-1)
   expect(published.content.services.slice(0, -1)).toEqual(original.content.services)
   const website = await context.newPage()
-  await website.goto('http://127.0.0.1:5190/services?category=wellness')
+  await website.goto(`${websiteUrl}/services?category=wellness`)
   await expect(website.getByRole('heading', { name: 'Movement coaching', exact: true })).toBeVisible()
   expect(added.image).toBe(images.image)
   // The website may render an optimized variant of the selected CMS image.
@@ -270,7 +272,7 @@ test('delete service verifies the admin password and preserves other unsaved edi
   await page.reload()
   await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Unsaved edit to keep')
   const website = await context.newPage()
-  await website.goto('http://127.0.0.1:5190/services')
+  await website.goto(`${websiteUrl}/services`)
   await expect(website.locator(`#${original[0].id}`)).toBeVisible()
   await expect(website.locator(`#${target.id}`)).toHaveCount(0)
 })
@@ -300,6 +302,8 @@ test('mobile navigation, search, and sign-out work without horizontal overflow',
 test('media upload and image picker attach an optimized image to an article', async ({ page }) => {
   await login(page)
   await page.getByRole('link', { name: 'Media library', exact: true }).click()
+  const beforeStorage = await (await page.request.get('/api/media/storage')).json()
+  await expect(page.getByRole('progressbar', { name: 'Image storage used' })).toHaveAttribute('value', String(beforeStorage.usedBytes))
   const buffer = await sharp(randomBytes(1600 * 1200 * 3), { raw: { width: 1600, height: 1200, channels: 3 } }).png().toBuffer()
   expect(buffer.length).toBeGreaterThan(4.5 * 1024 * 1024)
   await page.evaluate(() => {
@@ -316,6 +320,9 @@ test('media upload and image picker attach an optimized image to an article', as
   expect(uploadedBytes).toBeGreaterThan(0)
   expect(uploadedBytes).toBeLessThanOrEqual(2 * 1024 * 1024)
   const saved = await (await uploadResponse).json()
+  await expect(page.getByRole('progressbar', { name: 'Image storage used' })).toHaveAttribute('value', String(beforeStorage.usedBytes + saved.size))
+  await expect(page.getByRole('heading', { name: 'Image storage', exact: true })).toBeVisible()
+  await page.screenshot({ path: 'test-results/media-storage-desktop.png', fullPage: true, animations: 'disabled' })
   expect(saved.size).toBeLessThanOrEqual(512 * 1024)
   expect(saved.filename).toMatch(/\.webp$/)
   await expect(page.getByRole('img', { name: 'test-cover.png', exact: true })).toHaveJSProperty('naturalWidth', saved.width)
@@ -334,6 +341,37 @@ test('media upload and image picker attach an optimized image to an article', as
   expect(selected.size).toBeLessThanOrEqual(512 * 1024)
   await expect(page.getByLabel('Image URL', { exact: true })).toHaveValue(selected.url)
   await expect(page.getByRole('dialog')).toHaveCount(0)
+})
+
+test('media storage shows remaining capacity and handles full, failed and empty states', async ({ page }) => {
+  await login(page)
+  const limitBytes = 300 * 1024 * 1024
+  let usedBytes = 270 * 1024 * 1024
+  let fail = false
+  await page.route('**/api/media/storage', route => fail
+    ? route.fulfill({ status: 503, json: { message: 'Storage temporarily unavailable' } })
+    : route.fulfill({ json: { usedBytes, limitBytes, remainingBytes: limitBytes - usedBytes, imageCount: 120 } }))
+  await page.getByRole('link', { name: 'Media library', exact: true }).click()
+  const storage = page.getByRole('region', { name: 'Image storage', exact: true })
+  await expect(storage).toContainText('270 MB')
+  await expect(storage).toContainText('30 MB')
+  await expect(storage).toContainText('300 MB')
+  await expect(storage).toContainText('almost full')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: 'test-results/media-storage-mobile.png', fullPage: true, animations: 'disabled' })
+  usedBytes = limitBytes
+  await page.getByRole('button', { name: 'Refresh image storage' }).click()
+  await expect(storage).toContainText('Your image storage is full')
+  await expect(page.locator('input[type="file"]')).toBeDisabled()
+  fail = true
+  await page.getByRole('button', { name: 'Refresh image storage' }).click()
+  await expect(storage.getByRole('alert')).toContainText('Storage usage could not be loaded')
+  await expect(storage.getByRole('progressbar')).toHaveCount(0)
+  fail = false; usedBytes = 0
+  await page.getByRole('button', { name: 'Retry storage usage' }).click()
+  await expect(storage.getByRole('progressbar')).toHaveAttribute('value', '0')
+  await expect(page.locator('input[type="file"]')).toBeEnabled()
 })
 
 test('image preparation handles unsupported WebP encoders and invalid files', async ({ page }) => {

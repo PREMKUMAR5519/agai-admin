@@ -5,13 +5,16 @@ import MongoStore from 'connect-mongo'
 import { loginLimit } from './login-limit.js'
 import multer from 'multer'
 import { optimizeImage } from './optimize-image.js'
+import { mediaStorage, reserveImageStorage, releaseImageStorage } from './media-storage.js'
+import { deleteMedia } from './delete-media.js'
+import { loginChallengeConfig, verifyLoginChallenge } from './turnstile.js'
 import { ObjectId } from 'mongodb'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { config, root, clientRoot } from './config.js'
 import { checkPassword, hashPassword, csrfToken } from './security.js'
-import { articleSchema, contentSchema, servicesSchema, editSchema, loginSchema, passwordSchema, deleteServiceSchema } from './schema.js'
+import { articleSchema, contentSchema, servicesSchema, editSchema, loginSchema, passwordSchema, deleteServiceSchema, deleteMediaSchema } from './schema.js'
 
 const fail = (status, message) => Object.assign(new Error(message), { status })
 const id = value => {
@@ -24,12 +27,12 @@ const revision = req => {
 }
 const saveSession = req => new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()))
 
-export function createApp({ db, client, sessionStore } = {}) {
+export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
   const app = express()
   if (config.vercel || process.env.TRUST_PROXY === '1') app.set('trust proxy', 1)
   app.disable('x-powered-by')
   app.use(helmet({
-    contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http://localhost:5001', 'http://127.0.0.1:5001'], upgradeInsecureRequests: config.production ? [] : null } },
+    contentSecurityPolicy: { directives: { scriptSrc: ["'self'", 'https://challenges.cloudflare.com'], frameSrc: ['https://challenges.cloudflare.com'], imgSrc: ["'self'", 'data:', 'blob:', 'https:', 'http://localhost:5001', 'http://127.0.0.1:5001'], upgradeInsecureRequests: config.production ? [] : null } },
     strictTransportSecurity: config.production ? undefined : false,
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   }))
@@ -81,8 +84,10 @@ export function createApp({ db, client, sessionStore } = {}) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin && !origins.has(req.headers.origin)) return next(fail(403, 'Request origin is not allowed'))
     next()
   })
+  app.get('/api/auth/config', (_req, res) => res.json(loginChallengeConfig()))
   app.post('/api/auth/login', loginLimit(db), async (req, res) => {
     const input = loginSchema.parse(req.body)
+    await verifyLoginChallenge(input.turnstileToken, turnstileFetch)
     const user = await db.collection('users').findOne({ email: input.email })
     if (!user || !(await checkPassword(input.password, user.passwordHash))) throw fail(401, 'Email or password is incorrect')
     await new Promise((resolve, reject) => req.session.regenerate(error => error ? reject(error) : resolve()))
@@ -268,6 +273,15 @@ export function createApp({ db, client, sessionStore } = {}) {
   })
   const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 3 * 1024 * 1024, files: 1, fields: 0, parts: 1 }, fileFilter: (_req, file, callback) => callback(null, ['image/jpeg', 'image/png', 'image/webp'].includes(file.mimetype)) })
   app.get('/api/media', async (_req, res) => res.json(await db.collection('media').find().sort({ createdAt: -1 }).toArray()))
+  app.get('/api/media/storage', async (_req, res) => res.json(await mediaStorage(db)))
+  app.delete('/api/media/:id', loginLimit(db, { scope: 'media-delete', message: 'Too many password confirmation attempts. Try again in 15 minutes.' }), async (req, res) => {
+    const mediaId = id(req.params.id)
+    const input = deleteMediaSchema.parse(req.body)
+    if (!(await checkPassword(input.password, req.user.passwordHash))) throw fail(403, 'Admin password is incorrect. Image was not deleted.')
+    const removed = await deleteMedia(db, mediaId, config)
+    await activity(req, 'Deleted image', removed.originalName)
+    res.json({ deletedId: removed._id })
+  })
   app.post('/api/media', upload.single('image'), async (req, res) => {
     if (!req.file) throw fail(400, 'Choose a JPEG, PNG or WebP image under 3 MB')
     const filename = `${randomUUID()}.webp`
@@ -276,10 +290,16 @@ export function createApp({ db, client, sessionStore } = {}) {
       output = await optimizeImage(req.file.buffer)
     } catch { throw fail(400, 'This file could not be decoded as a supported image') }
     const record = { filename, originalName: req.file.originalname.slice(0, 200), url: `${config.publicUrl}/uploads/${filename}`, width: output.info.width, height: output.info.height, size: output.info.size, createdAt: new Date() }
-    await db.collection('mediaFiles').insertOne({ _id: filename, data: output.data })
+    await reserveImageStorage(db, output.data.length)
     let result
-    try { result = await db.collection('media').insertOne(record) }
-    catch (error) { await db.collection('mediaFiles').deleteOne({ _id: filename }); throw error }
+    try {
+      await db.collection('mediaFiles').insertOne({ _id: filename, data: output.data })
+      result = await db.collection('media').insertOne(record)
+    } catch (error) {
+      await db.collection('mediaFiles').deleteOne({ _id: filename })
+      await releaseImageStorage(db, output.data.length)
+      throw error
+    }
     await activity(req, 'Uploaded image', record.originalName)
     res.status(201).json({ ...record, _id: result.insertedId })
   })

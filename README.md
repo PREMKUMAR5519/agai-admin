@@ -67,6 +67,8 @@ MongoDB must be hosted separately (for example MongoDB Atlas). It stores content
    | `MONGODB_URI` | Atlas connection string; treat as a secret |
    | `MONGODB_DB` | `agai_cms` |
    | `SESSION_SECRET` | At least 32 random characters; treat as a secret and keep stable across deploys |
+   | `TURNSTILE_SITE_KEY` | Public site key for your existing Cloudflare Turnstile widget |
+   | `TURNSTILE_SECRET_KEY` | Matching widget secret; server-only |
    | `API_URL` | Canonical project HTTPS URL, without `/api` or a trailing slash |
    | `ADMIN_ORIGIN` | Same value as `API_URL` |
    | `NODE_ENV` | `production` |
@@ -148,15 +150,37 @@ Admin login reads MongoDB only. No local credential file is used. Seed content r
 
 Browser tests use Edge on Windows; elsewhere run `npx playwright install chromium`. They require the sibling `../agai` checkout and free ports 5002, 5178 and 5190. Development uses 5001/5177. Test content is isolated from `agai_cms`.
 
-Current scope is one administrator role, rich-text blog bodies, and manual website deployment. There is no email password recovery, publishing scheduler or automatic deploy trigger. Media is retained to avoid breaking existing references.
+Set `E2E_WEBSITE_PORT` to use another public-site test port when 5190 is occupied. To check the actual bundled admin CSS and JavaScript, run `npm run build` first, then run browser tests with `E2E_BUILT_CLIENT=1`; the built admin is served on the isolated API server at port 5002. `tests/browser/services-layout.spec.js` checks desktop grid placement, mobile overflow and focus, field validation, and recovery from failed saves/publishing.
+
+Current scope is one administrator role, rich-text blog bodies, and manual website deployment. There is no email password recovery, publishing scheduler or automatic deploy trigger. Media is retained until an administrator deletes it through the password-verified library deletion flow.
 
 The matching public-site rich-text renderer is in `../agai/src/components/RichText.tsx`. Deploy both repositories to display new formatting publicly. The API retains plain-text `sections` for older consumers. Rich-text bodies allow up to 100,000 characters and 12 levels of nesting. Formatting CSS is kept in sync between the admin preview and public renderer.
 
 ## Adding a service
 
+The service list stays beside the editor on desktop and opens with **Choose a service** on smaller screens. Use **Overview**, **Details**, **Images**, and **Preview**, or the Previous/Next buttons, to move through the form. Switching services keeps unsaved edits. Validation opens the affected service and section and marks the field to correct. Save and publish apply to all service drafts; if publishing fails after saving, the saved draft remains available and publishing can be retried without another draft write.
+
 Open **Website content ? Add service**. Fill in the title, short title, introduction, description, audience and care focus (1?8 lines), choose a category/icon, and select both the service image and homepage preview image. Text fields show their character limits. **Cancel new service** discards the unsaved entry; save a complete draft before starting another.
 
 **Save draft** stores the service privately in MongoDB. **Publish changes** publishes only the services draft with revision checks to prevent overwriting another editor's changes. Other website content drafts remain private. Published services appear on the connected website's homepage, Services page, category filters and appointment selector on the next page load. Existing service links remain valid. Deploy both repositories to ship the new dashboard/API validation and updated frontend service-count wording.
+
+## Login verification
+
+Admin login uses Cloudflare Turnstile. Keep the existing names `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in Vercel; no `VITE_` prefix is needed. The frontend fetches only the public site key from `/api/auth/config`. The secret is read exclusively by the Express backend, which verifies each login token with Cloudflare Siteverify and checks its `admin-login` action and hostname before authenticating the password.
+
+In the existing Cloudflare widget settings, allow your admin site's hostname (and any preview hostname where you want login enabled). `API_URL` and `ADMIN_ORIGIN` must match the intended admin origin; the current `VERCEL_URL` hostname is also accepted by server verification. Both keys are required on production/Vercel deployments; missing configuration or verification failures block login. Failed logins, expiration and challenge errors require a fresh challenge. Redeploy after changing Vercel variables.
+
+Local development without either key remains usable without Turnstile. Setting either key locally requires both and enables verification. Tests stub the widget and Siteverify responses; they do not validate real production keys or Cloudflare hostname settings. The integration uses the existing backend and does not deploy an additional Worker.
+
+## Image storage allowance
+
+The Media library shows used image storage, available space, and a fixed **300 MB** total (300 × 1,024 × 1,024 bytes). Usage counts saved optimized uploads, not original file sizes, seed website assets, external image URLs or MongoDB indexes/other data. Reusing an uploaded image does not add storage. The meter refreshes after upload and can be refreshed manually.
+
+`GET /api/media/storage` requires an admin session and returns `{ usedBytes, remainingBytes, limitBytes, imageCount }`. A MongoDB `storageQuotas` record initializes from existing media sizes automatically. Uploads reserve bytes atomically to prevent concurrent uploads exceeding the allowance and release reservations if image or metadata writes fail. The same quota applies to library uploads and image pickers. No new environment variables or storage services are required. This is an application allowance, not additional capacity purchased from the database provider.
+
+In **Media library**, each image has a **Delete** action. The dialog identifies the image and requires the signed-in administrator's password. `DELETE /api/media/:id` accepts `{ password }` with the existing session and CSRF token, verifies the current MongoDB password hash, and rate limits confirmation attempts independently of sign-in. Successful deletion removes the library record, MongoDB image bytes, and any legacy local upload copy, then releases the image's storage allowance. The library and meter refresh immediately. Passwords are cleared on failure or cancellation and are never stored by this feature.
+
+Deletion is permanent and does not rewrite blog or service content. Replace referenced images before deleting them to avoid missing images on the website. Existing browser/CDN caches may retain previously fetched image copies until expiration. Simultaneous deletion requests release the allowance once; cleanup failures retain a retryable library record and its quota.
 
 ## Services API and state
 

@@ -16,6 +16,8 @@ if (!secret) {
 if (secret.length < 32) throw new Error('SESSION_SECRET must contain at least 32 characters')
 export const config = {
   production, secret,
+  turnstileSiteKey: process.env.TURNSTILE_SITE_KEY?.trim() || '',
+  turnstileSecretKey: process.env.TURNSTILE_SECRET_KEY?.trim() || '',
   mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017',
   dbName: process.env.MONGODB_DB || 'agai_cms',
   host: process.env.HOST || '127.0.0.1',

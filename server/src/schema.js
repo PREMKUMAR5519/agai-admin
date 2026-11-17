@@ -36,7 +36,8 @@ export const contentSchema = z.object({
   faqs: z.array(z.object({ question: text(250), answer: text(2000) })).min(1).max(30),
   approach: z.array(z.object({ title: text(180), text: text(1500) })).length(3),
 })
-export const loginSchema = z.object({ email: z.email().max(200).transform(value => value.toLowerCase()), password: z.string().min(1).max(256) })
+export const loginSchema = z.object({ email: z.email().max(200).transform(value => value.toLowerCase()), password: z.string().min(1).max(256), turnstileToken: z.string().max(2048).optional() })
 export const passwordSchema = z.object({ currentPassword: z.string().min(1).max(256), newPassword: z.string().min(12).max(128) })
 export const deleteServiceSchema = z.object({ revision: z.number().int().min(0), password: z.string().min(1).max(256) })
+export const deleteMediaSchema = z.object({ password: z.string().min(1).max(256) })
 export const editSchema = schema => z.object({ revision: z.number().int().min(0), data: schema })

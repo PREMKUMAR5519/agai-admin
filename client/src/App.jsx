@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, NavLink, Navigate, Route, Routes, useLocation } from 'react-router'
 import { ArrowUpRight, BookOpen, CircleHelp, Eye, EyeOff, FileText, Image, LayoutDashboard, LogOut, Menu, Settings, X } from 'lucide-react'
 import { api, setToken } from './api'
-import { Field, Loading, Notice } from './components'
+import { Field, Loading, Notice, useResource } from './components'
+import Turnstile from './Turnstile'
 import Dashboard from './pages/Dashboard'
 import Journal from './pages/Journal'
 import ArticleEditor from './pages/ArticleEditor'
@@ -12,13 +13,20 @@ import SettingsPage from './pages/Settings'
 
 const navigation = [{ to: '/', label: 'Overview', icon: LayoutDashboard, end: true }, { to: '/journal', label: 'Blogs', icon: BookOpen }, { to: '/content', label: 'Website content', icon: FileText, end: true }, { to: '/media', label: 'Media library', icon: Image }]
 function Login({ onLogin }) {
+  const challenge = useResource('/auth/config')
+  const [turnstileToken, setTurnstileToken] = useState('')
+  const [challengeVersion, setChallengeVersion] = useState(0)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   async function submit(event) {
-    event.preventDefault(); setBusy(true); setError('')
+    event.preventDefault()
+    if (busy || !challenge.data || (challenge.data.required && !turnstileToken)) return
+    setBusy(true); setError('')
     const form = new FormData(event.currentTarget)
-    try { onLogin(await api('/auth/login', { method: 'POST', body: Object.fromEntries(form) })) } catch (error) { setError(error.message) } finally { setBusy(false) }
+    try { onLogin(await api('/auth/login', { method: 'POST', body: { ...Object.fromEntries(form), turnstileToken } })) }
+    catch (error) { setError(error.message); setTurnstileToken(''); setChallengeVersion(value => value + 1) }
+    finally { setBusy(false) }
   }
   return (
     <main className="login-page">
@@ -36,7 +44,8 @@ function Login({ onLogin }) {
             </button>
           </div>
         </div>
-        <button type="submit" className="button primary" disabled={busy}>{busy ? 'Signing in...'  : 'Sign in'}</button>
+        {challenge.error ? <><Notice error>{challenge.error}</Notice><button type="button" className="text-button" onClick={challenge.reload}>Retry login verification</button></> : !challenge.data ? <p className="login-verification" role="status">Preparing secure sign-in…</p> : challenge.data.required && <Turnstile key={challengeVersion} siteKey={challenge.data.siteKey} onToken={setTurnstileToken}/>}
+        <button type="submit" className="button primary" disabled={busy || !challenge.data || (challenge.data.required && !turnstileToken)}>{busy ? 'Signing in...'  : 'Sign in'}</button>
       </form>
     </main>
   )

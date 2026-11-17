@@ -20,7 +20,7 @@ const server = createApp({ client, db }).listen(5002, '127.0.0.1')
 const web = await createServer({ root: clientRoot, server: { host: '127.0.0.1', port: 5178, strictPort: true } })
 await web.listen()
 const websiteRoot = resolve(root, '../../agai')
-const website = await createServer({ root: websiteRoot, configFile: resolve(websiteRoot, 'vite.config.ts'), define: { 'import.meta.env.VITE_CMS_API_URL': JSON.stringify('http://127.0.0.1:5002') }, server: { host: '127.0.0.1', port: 5190, strictPort: true } })
+const website = await createServer({ root: websiteRoot, configFile: resolve(websiteRoot, 'vite.config.ts'), define: { 'import.meta.env.VITE_CMS_API_URL': JSON.stringify('http://127.0.0.1:5002') }, server: { host: '127.0.0.1', port: Number(process.env.E2E_WEBSITE_PORT || 5190), strictPort: true } })
 await website.listen()
 console.log('Isolated browser test servers ready')
 async function close() {

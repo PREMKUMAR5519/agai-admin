@@ -35,18 +35,18 @@ export function useUnsaved(dirty) {
 }
 export function Loading() { return <div className="loading" role="status"><LoaderCircle className="spin"/>Loading your workspace…</div> }
 export function Notice({ error, children }) { return children ? <div className={`notice ${error ? 'error' : 'success'}`} role={error ? 'alert' : 'status'}>{error && <AlertCircle size={18}/>}<span>{children}</span></div> : null }
-export function Field({ label, hint, textarea, ...props }) {
+export function Field({ label, hint, error, textarea, ...props }) {
   const generatedId = useId()
   const id = props.id || generatedId
-  const accessibility = { id, 'aria-describedby': hint ? `${id}-hint` : undefined }
-  return <div className="field"><label htmlFor={id}>{label}</label>{textarea ? <textarea {...props} {...accessibility}/> : <input {...props} {...accessibility}/>} {hint && <small id={`${id}-hint`}>{hint}</small>}</div>
+  const accessibility = { id, 'aria-describedby': [hint && `${id}-hint`, error && `${id}-error`].filter(Boolean).join(' ') || undefined, 'aria-invalid': error ? true : props['aria-invalid'] }
+  return <div className="field"><label htmlFor={id}>{label}</label>{textarea ? <textarea {...props} {...accessibility}/> : <input {...props} {...accessibility}/>} {error && <small className="field-error" id={`${id}-error`}>{error}</small>}{hint && <small id={`${id}-hint`}>{hint}</small>}</div>
 }
 export function PageHead({ eyebrow, title, description, children }) { return <div className="page-head"><div><p className="eyebrow">{eyebrow || 'YOUR WORKSPACE'}</p><h1>{title}</h1>{description && <p>{description}</p>}</div><div className="head-actions">{children}</div></div> }
 export function Badge({ status }) { return <span className={`badge ${status.toLowerCase().replaceAll(' ', '-')}`}><i/>{status}</span> }
 export function Empty({ title, children }) { return <div className="empty"><div className="empty-mark">A</div><h3>{title}</h3>{children}</div> }
-export function ImagePicker({ value, onChange, label = 'Cover image', inputId }) {
+export function ImagePicker({ value, onChange, label = 'Cover image', inputId, error }) {
   const [open, setOpen] = useState(false)
-  return <div className="image-picker"><span className="field-label">{label}</span><button type="button" className="image-select" onClick={() => setOpen(true)}>{value ? <img src={assetUrl(value)} alt="Selected image"/> : <Upload/>}<span>{value ? 'Change image' : 'Choose or upload image'}</span></button><Field id={inputId} label="Image URL" value={value} onChange={event => onChange(event.target.value)} placeholder="https://…" hint="Use your media library or an existing image URL."/>{open && <MediaDialog onClose={() => setOpen(false)} onSelect={url => { onChange(url); setOpen(false) }}/>}</div>
+  return <div className="image-picker"><span className="field-label">{label}</span><button type="button" className="image-select" onClick={() => setOpen(true)}>{value ? <img src={assetUrl(value)} alt="Selected image"/> : <Upload/>}<span>{value ? 'Change image' : 'Choose or upload image'}</span></button><Field id={inputId} label="Image URL" value={value} error={error} maxLength={2000} onChange={event => onChange(event.target.value)} placeholder="https://…" hint="Use your media library or an existing image URL."/>{open && <MediaDialog onClose={() => setOpen(false)} onSelect={url => { onChange(url); setOpen(false) }}/>}</div>
 }
 function MediaDialog({ onClose, onSelect }) {
   const dialog = useRef(null)

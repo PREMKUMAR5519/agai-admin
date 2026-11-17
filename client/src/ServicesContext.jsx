@@ -5,13 +5,14 @@ import { useResource } from './components'
 const ServicesContext = createContext(null)
 export function ServicesProvider({ children }) {
   const resource = useResource('/services')
-  const saveServices = useCallback(async (services, revision, publish) => {
-    let result = await api('/services', { method: 'PUT', body: { revision, data: services } })
+  const saveServices = useCallback(async (services, revision) => {
+    const result = await api('/services', { method: 'PUT', body: { revision, data: services } })
     resource.setData(result)
-    if (publish) {
-      result = await api('/services/publish', { method: 'POST', body: { revision: result.revision } })
-      resource.setData(result)
-    }
+    return result
+  }, [resource.setData])
+  const publishServices = useCallback(async revision => {
+    const result = await api('/services/publish', { method: 'POST', body: { revision } })
+    resource.setData(result)
     return result
   }, [resource.setData])
   const deleteService = useCallback(async (id, revision, password) => {
@@ -19,7 +20,7 @@ export function ServicesProvider({ children }) {
     resource.setData(result)
     return result
   }, [resource.setData])
-  return <ServicesContext.Provider value={{ ...resource, saveServices, deleteService }}>{children}</ServicesContext.Provider>
+  return <ServicesContext.Provider value={{ ...resource, saveServices, publishServices, deleteService }}>{children}</ServicesContext.Provider>
 }
 export function useServices() {
   const context = useContext(ServicesContext)

@@ -17,3 +17,9 @@
 .service-delete-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
 .service-delete-confirm{background:#b43232;color:#fff}
 .service-delete-confirm:hover{background:#962626}
+.login-verification{margin:20px 0 12px;min-width:0;font-size:11px;color:#617482}
+.login-verification>div{min-height:65px}
+.login-verification p{margin-top:8px;line-height:1.6}
+.login-verification [role=alert]{color:#ab4c45}
+.login-verification .text-button{margin-top:8px}
+@media(max-width:360px){.login-page{padding:16px}.login-form{padding:24px 16px}}
