@@ -10,8 +10,8 @@ test('large detailed images become bounded WebP files', async () => {
   const output = await optimizeImage(original)
   const decoded = await sharp(output.data).metadata()
   assert.equal(decoded.format, 'webp')
-  assert.ok(output.data.length <= 512 * 1024)
-  assert.ok(decoded.width <= 1920 && decoded.height <= 1920)
+  assert.ok(output.data.length <= 250 * 1024)
+  assert.ok(decoded.width <= 1600 && decoded.height <= 1600)
   assert.ok(Math.abs(decoded.width / decoded.height - 4 / 3) < 0.01)
 })
 

@@ -39,7 +39,7 @@ export default function Media() {
     <Notice error>{error || failure}</Notice><Notice>{message}</Notice>
     {error && <button type="button" className="button secondary" onClick={reload}>Retry loading images</button>}
     <MediaStorage data={storage.data} error={storage.error} onRefresh={storage.reload}/>
-    <div className="upload-note"><Upload size={19}/><p>JPEG, PNG or WebP · Up to 20 MB<span>Automatically resized and saved as WebP, up to 512 KB per image.</span></p></div>
+    <div className="upload-note"><Upload size={19}/><p>JPEG, PNG or WebP · Up to 20 MB<span>Automatically resized and saved as WebP, up to 250 KB per image.</span></p></div>
     {!data && !error ? <Loading/> : data?.length ? <div className="media-grid">{data.map(item => <article className="panel media-card" key={item._id}>
       <img src={item.url} alt={item.originalName}/><div><h3>{item.originalName}</h3><p>{item.width} × {item.height} · {Math.round(item.size / 1024)} KB</p><small>{dateLabel(item.createdAt)}</small>
         <label className="sr-only" htmlFor={`media-${item._id}`}>Image URL for {item.originalName}</label><input id={`media-${item._id}`} className="media-url" value={item.url} readOnly onFocus={event => event.target.select()}/>

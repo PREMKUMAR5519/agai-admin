@@ -14,7 +14,7 @@ export async function prepareImage(file) {
     if (!image.naturalWidth || image.naturalWidth * image.naturalHeight > 40000000) {
       throw new Error('Choose an image with no more than 40 megapixels.')
     }
-    let edge = Math.min(1920, Math.max(image.naturalWidth, image.naturalHeight))
+    let edge = Math.min(1600, Math.max(image.naturalWidth, image.naturalHeight))
     for (let attempt = 0; attempt < 8; attempt++) {
       const scale = edge / Math.max(image.naturalWidth, image.naturalHeight)
       canvas.width = Math.max(1, Math.round(image.naturalWidth * scale))

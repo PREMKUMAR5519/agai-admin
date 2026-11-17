@@ -502,6 +502,17 @@ test('contact enquiries validate, persist once, allow website CORS and stay priv
   await db.collection('contactSubmissions').insertMany(extras)
   assert.equal((await agent.get('/api/contact-submissions').expect(200)).body.items.length, 20)
   assert.equal((await agent.get('/api/contact-submissions?page=2').expect(200)).body.items.length, 2)
+  for (const search of ['vISitor', '9876543210', '+91 (98765) 43210']) {
+    const result = await agent.get('/api/contact-submissions').query({ search }).expect(200)
+    assert.equal(result.body.total, 1)
+    assert.equal(result.body.items[0]._id, input.submissionId)
+  }
+  await db.collection('contactSubmissions').updateOne({ _id: input.submissionId }, { $set: { email: 'visitor+test@example.com' } })
+  const emailMatch = await agent.get('/api/contact-submissions').query({ search: 'VISITOR+TEST@EXAMPLE.COM' }).expect(200)
+  assert.equal(emailMatch.body.total, 1)
+  const literalSearch = await agent.get('/api/contact-submissions').query({ search: '.*' }).expect(200)
+  assert.equal(literalSearch.body.total, 0)
+  await agent.get('/api/contact-submissions').query({ search: 'a'.repeat(201) }).expect(400)
   await db.collection('contactSubmissions').deleteMany({ name: 'Pagination' })
   for (let i = 0; i < 20; i++) await request(app).post('/api/public/contact').send(input)
   const limited = await request(app).post('/api/public/contact').send(input).expect(429)

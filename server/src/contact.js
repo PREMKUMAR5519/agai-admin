@@ -45,10 +45,18 @@ export function publicContact(app, db) {
 export function privateContact(app, db) {
   app.get('/api/contact-submissions', async (req, res) => {
     const page = z.coerce.number().int().min(1).max(100000).parse(req.query.page || 1)
+    const search = z.string().trim().max(200).parse(req.query.search ?? '')
+    const escape = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const literal = { $regex: escape(search), $options: 'i' }
+    const digits = search.replace(/\D/g, '')
+    const phone = digits && /^[+\d\s().-]+$/.test(search)
+      ? { $regex: digits.split('').join('[^0-9]*') }
+      : literal
+    const filter = search ? { $or: [{ name: literal }, { email: literal }, { phone }] } : {}
     const pageSize = 20
     const [items, total] = await Promise.all([
-      db.collection('contactSubmissions').find().sort({ createdAt: -1, _id: -1 }).skip((page - 1) * pageSize).limit(pageSize).toArray(),
-      db.collection('contactSubmissions').countDocuments(),
+      db.collection('contactSubmissions').find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * pageSize).limit(pageSize).toArray(),
+      db.collection('contactSubmissions').countDocuments(filter),
     ])
     res.json({ items, total, page, pageSize })
   })
