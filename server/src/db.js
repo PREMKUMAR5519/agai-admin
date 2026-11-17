@@ -9,6 +9,7 @@ export async function connectDatabase(name = config.dbName) {
       db.collection('users').createIndex({ email: 1 }, { unique: true }),
       db.collection('posts').createIndex({ 'draft.slug': 1 }, { unique: true }),
       db.collection('posts').createIndex({ 'published.slug': 1 }, { unique: true, partialFilterExpression: { 'published.slug': { $type: 'string' } } }),
+      db.collection('contactSubmissions').createIndex({ createdAt: -1, _id: -1 }),
       db.collection('activity').createIndex({ createdAt: -1 }),
       db.collection('loginLimits').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
     ])

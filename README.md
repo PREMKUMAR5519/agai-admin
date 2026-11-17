@@ -201,3 +201,11 @@ To delete a saved service, select it under **Website content**, click **Delete s
 The dashboard uses `ServicesContext` for API state, loading/retry and saves. The website uses its own typed `ServicesContext`: one shared request feeds homepage cards, service listings, filters, appointment choices, footer and chat service data. It keeps the previous data while loading, validates API responses, cancels superseded requests and offers retry on failure. New appointment links remain selected when services arrive after initial rendering.
 
 Deploy the admin/backend first, then the website: the website build now requires `/api/public/services` as well as `/api/public/content` when `CMS_API_URL` is configured. No new environment variables or paid services are required.
+
+## Contact form inbox
+
+The public website Contact us form submits to `POST /api/public/contact`. Valid enquiries are stored in MongoDB `contactSubmissions`; signed-in administrators can read them at **Contact forms** (`/contact-forms`). The private list API is `GET /api/contact-submissions?page=1` (20 per page, newest first).
+
+Deploy both repositories: deploy agai-admin first, then agai. On the website Vercel project, keep `CMS_API_URL` set to the admin/backend origin (or its `/api/public/content` URL). On the admin Vercel project, set `WEBSITE_URL` to the actual public website URL; the contact API permits that origin and its www alias. Localhost origins are permitted only outside production. No additional paid service or secret is needed.
+
+Submission includes name, phone, optional email, message and selected service. Server validation, a honeypot and shared MongoDB rate limiting protect the endpoint. A submission UUID makes retries idempotent. Enquiries are private, excluded from public content, and the website retains input on request failure. Success is shown only after the database write completes. This flow stores enquiries for staff review; it does not send email notifications or confirm appointments. Historical local drafts were never submitted and cannot be imported.

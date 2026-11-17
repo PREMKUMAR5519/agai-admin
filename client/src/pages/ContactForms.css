@@ -1,0 +1,15 @@
+.contact-inbox .contact-total { display:flex; align-items:center; gap:10px; color:#58718a; margin:0 0 22px; }
+.contact-inbox .contact-entries { display:grid; gap:16px; }
+.contact-inbox .contact-entry { min-width:0; padding:24px; background:white; border:1px solid #e0e7ef; border-radius:12px; overflow-wrap:anywhere; }
+.contact-inbox .contact-entry header { display:flex; align-items:start; justify-content:space-between; gap:16px; }
+.contact-inbox .contact-entry h2 { font-size:18px; margin:0 0 6px; }
+.contact-inbox .contact-entry header p { margin:0; color:#58718a; }
+.contact-inbox time,.contact-inbox dt,.contact-inbox small { color:#58718a; font-size:12px; }
+.contact-inbox dl { display:flex; flex-wrap:wrap; gap:20px 50px; margin:22px 0; }
+.contact-inbox dd { margin:6px 0 0; }
+.contact-inbox a { color:#075caf; }
+.contact-inbox details { border-top:1px solid #e0e7ef; padding-top:16px; }
+.contact-inbox summary { cursor:pointer; color:#075caf; font-weight:600; }
+.contact-inbox .contact-message { white-space:pre-wrap; line-height:1.7; }
+.contact-inbox .contact-pagination { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-top:24px; }
+@media(max-width:600px) { .contact-inbox .contact-entry { padding:18px; } .contact-inbox .contact-entry header { flex-direction:column; } }

@@ -1,3 +1,4 @@
+import { publicContact, privateContact } from './contact.js'
 import express from 'express'
 import helmet from 'helmet'
 import session from 'express-session'
@@ -47,6 +48,7 @@ export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
     res.setHeader('Cache-Control', 'no-store')
     next()
   })
+  publicContact(app, db)
   app.get('/api/public/services', async (_req, res) => {
     const content = await db.collection('content').findOne({ _id: 'main' }, { projection: { 'published.services': 1, publishedAt: 1 } })
     if (!content?.published?.services) throw fail(503, 'Services have not been initialized. Run npm run setup.')
@@ -105,6 +107,7 @@ export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('X-CSRF-Token') !== req.session.csrf) return next(fail(403, 'Your security token expired. Refresh the page and try again.'))
     next()
   })
+  privateContact(app, db)
   app.get('/api/auth/me', (req, res) => res.json({ user: { name: req.user.name, email: req.user.email }, csrf: req.session.csrf }))
   app.post('/api/auth/logout', (req, res, next) => req.session.destroy(error => {
     if (error) return next(error)

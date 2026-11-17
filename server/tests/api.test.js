@@ -482,6 +482,32 @@ test('image password confirmation is rate limited and cannot escape the uploads 
   assert.deepEqual((await agent.get('/api/media/storage')).body, before)
 })
 
+test('contact enquiries validate, persist once, allow website CORS and stay private', async () => {
+  const input = { submissionId: 'b722c814-d511-4a1b-9f23-aee8f03f712b', name: 'Visitor', email: '', phone: '+91 98765 43210', message: 'Please contact me about a visit.', service: 'General enquiry' }
+  const origin = new URL(config.websiteUrl).origin
+  const preflight = await request(app).options('/api/public/contact').set('Origin', origin).expect(204)
+  assert.equal(preflight.headers['access-control-allow-origin'], origin)
+  await request(app).post('/api/public/contact').set('Origin', 'https://untrusted.example').send(input).expect(403)
+  await request(app).post('/api/public/contact').send({ ...input, message: ' ' }).expect(400)
+  await request(app).post('/api/public/contact').send({ ...input, phone: 'invalid' }).expect(400)
+  await request(app).post('/api/public/contact').send({ ...input, website: 'spam' }).expect(400)
+  await request(app).post('/api/public/contact').set('Origin', origin).send(input).expect(201)
+  await request(app).post('/api/public/contact').send(input).expect(201)
+  assert.equal(await db.collection('contactSubmissions').countDocuments({ _id: input.submissionId }), 1)
+  await request(app).get('/api/contact-submissions').expect(401)
+  const inbox = await agent.get('/api/contact-submissions').expect(200)
+  assert.ok(inbox.body.items.some(item => item.message === input.message))
+  await agent.get('/api/contact-submissions?page=-1').expect(400)
+  const extras = Array.from({ length: 21 }, (_, i) => ({ _id: 'pagination-' + i, name: 'Pagination', createdAt: new Date() }))
+  await db.collection('contactSubmissions').insertMany(extras)
+  assert.equal((await agent.get('/api/contact-submissions').expect(200)).body.items.length, 20)
+  assert.equal((await agent.get('/api/contact-submissions?page=2').expect(200)).body.items.length, 2)
+  await db.collection('contactSubmissions').deleteMany({ name: 'Pagination' })
+  for (let i = 0; i < 20; i++) await request(app).post('/api/public/contact').send(input)
+  const limited = await request(app).post('/api/public/contact').send(input).expect(429)
+  assert.ok(limited.headers['retry-after'])
+})
+
 test('password changes invalidate other sessions and logout revokes access', async () => {
   const other = request.agent(app)
   await other.post('/api/auth/login').send({ email: 'test@example.com', password }).expect(200)
