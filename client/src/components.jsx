@@ -44,9 +44,9 @@ export function Field({ label, hint, textarea, ...props }) {
 export function PageHead({ eyebrow, title, description, children }) { return <div className="page-head"><div><p className="eyebrow">{eyebrow || 'YOUR WORKSPACE'}</p><h1>{title}</h1>{description && <p>{description}</p>}</div><div className="head-actions">{children}</div></div> }
 export function Badge({ status }) { return <span className={`badge ${status.toLowerCase().replaceAll(' ', '-')}`}><i/>{status}</span> }
 export function Empty({ title, children }) { return <div className="empty"><div className="empty-mark">A</div><h3>{title}</h3>{children}</div> }
-export function ImagePicker({ value, onChange, label = 'Cover image' }) {
+export function ImagePicker({ value, onChange, label = 'Cover image', inputId }) {
   const [open, setOpen] = useState(false)
-  return <div className="image-picker"><span className="field-label">{label}</span><button type="button" className="image-select" onClick={() => setOpen(true)}>{value ? <img src={assetUrl(value)} alt="Selected image"/> : <Upload/>}<span>{value ? 'Change image' : 'Choose or upload image'}</span></button><Field label="Image URL" value={value} onChange={event => onChange(event.target.value)} placeholder="https://…" hint="Use your media library or an existing image URL."/>{open && <MediaDialog onClose={() => setOpen(false)} onSelect={url => { onChange(url); setOpen(false) }}/>}</div>
+  return <div className="image-picker"><span className="field-label">{label}</span><button type="button" className="image-select" onClick={() => setOpen(true)}>{value ? <img src={assetUrl(value)} alt="Selected image"/> : <Upload/>}<span>{value ? 'Change image' : 'Choose or upload image'}</span></button><Field id={inputId} label="Image URL" value={value} onChange={event => onChange(event.target.value)} placeholder="https://…" hint="Use your media library or an existing image URL."/>{open && <MediaDialog onClose={() => setOpen(false)} onSelect={url => { onChange(url); setOpen(false) }}/>}</div>
 }
 function MediaDialog({ onClose, onSelect }) {
   const dialog = useRef(null)

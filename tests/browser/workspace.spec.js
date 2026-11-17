@@ -133,19 +133,25 @@ test('add service saves privately and publishes to listings, filters and appoint
   const images = original.content.services[0]
   await page.getByRole('button', { name: 'Add service', exact: true }).click()
   await page.getByRole('button', { name: 'Save draft', exact: true }).click()
-  await expect(page.getByRole('alert')).toContainText('Complete every field')
+  await expect(page.getByRole('alert')).toContainText('Add service title')
   await page.getByRole('button', { name: 'Cancel new service', exact: true }).click()
-  await expect(page.getByLabel('Select a service').locator('option')).toHaveCount(original.content.services.length)
+  await expect(page.getByRole('navigation', { name: 'Choose a service' }).getByRole('button')).toHaveCount(original.content.services.length)
   await page.getByRole('button', { name: 'Add service', exact: true }).click()
   await page.getByLabel('Service category', { exact: true }).selectOption('wellness')
   await page.getByLabel('Service icon', { exact: true }).selectOption('leaf')
   for (const [label, text] of [
     ['Service title', 'Movement coaching'], ['Short title', 'Movement coaching'],
     ['Short introduction', 'Support for your everyday movement goals.'],
+  ]) await page.getByLabel(label, { exact: true }).fill(text)
+  await page.getByRole('tab', { name: 'Details', exact: true }).click()
+  for (const [label, text] of [
     ['Description', 'Discuss your goals and build a practical movement plan.'],
     ['Who is this for?', 'People looking for guidance with everyday movement.'],
-    ['Care focus (one item per line)', 'Discuss your goals\nPlan your next steps'],
+    ['Care focus 1', 'Discuss your goals'],
   ]) await page.getByLabel(label, { exact: true }).fill(text)
+  await page.getByRole('button', { name: 'Add care focus', exact: true }).click()
+  await page.getByLabel('Care focus 2', { exact: true }).fill('Plan your next steps')
+  await page.getByRole('tab', { name: 'Images', exact: true }).click()
   await page.locator('.image-picker').nth(0).getByLabel('Image URL').fill(images.image)
   await page.locator('.image-picker').nth(1).getByLabel('Image URL').fill(images.previewImage)
   await page.setViewportSize({ width: 390, height: 844 })
@@ -155,7 +161,8 @@ test('add service saves privately and publishes to listings, filters and appoint
   await expect(page.getByRole('status')).toContainText('Draft saved')
   expect((await (await page.request.get('/api/public/content')).json()).content.services).toEqual(original.content.services)
   await page.reload()
-  await page.getByLabel('Select a service').selectOption({ label: 'Movement coaching' })
+  await page.getByRole('button', { name: 'Choose a service', exact: false }).click()
+  await page.getByRole('button', { name: 'Edit Movement coaching', exact: true }).click()
   await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Movement coaching')
   await page.getByRole('button', { name: 'Publish changes', exact: true }).click()
   await expect(page.getByRole('status')).toContainText('Website content published')
@@ -176,13 +183,63 @@ test('add service saves privately and publishes to listings, filters and appoint
   await expect(website.locator('.home-services .section-bottom')).toContainText(`${published.content.services.length} services`)
 })
 
+test('service editor search, sections, preview and validation keep edits across services', async ({ page }) => {
+  await login(page)
+  await page.getByRole('link', { name: 'Website content', exact: true }).click()
+  const original = (await (await page.request.get('/api/services')).json()).draft.services
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  const title = page.getByLabel('Service title', { exact: true })
+  await title.fill('Care with a personal touch')
+  await page.getByLabel('Search services', { exact: true }).fill('no matching service')
+  await expect(page.getByText('No matching services.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click()
+  await page.getByLabel('Filter services by status').selectOption('Unsaved')
+  await expect(page.getByRole('navigation', { name: 'Choose a service' }).getByRole('button')).toHaveCount(1)
+  await page.getByLabel('Filter services by status').selectOption('All services')
+  await page.getByLabel('Search services', { exact: true }).fill(original[1].shortTitle)
+  await page.getByRole('button', { name: `Edit ${original[1].shortTitle}`, exact: true }).click()
+  await title.fill('Another private edit')
+  await page.getByLabel('Search services', { exact: true }).fill('')
+  await page.getByRole('button', { name: `Edit ${original[0].shortTitle}`, exact: true }).click()
+  await expect(title).toHaveValue('Care with a personal touch')
+  await page.screenshot({ path: 'test-results/services-editor-desktop.png', fullPage: true, animations: 'disabled' })
+  await page.getByRole('tab', { name: 'Overview', exact: true }).focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(page.getByRole('tab', { name: 'Details', exact: true })).toBeFocused()
+  await page.getByLabel('Description', { exact: true }).fill('')
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  await expect(page.locator('.service-draft-preview h2')).toHaveText('Care with a personal touch')
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Details', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByLabel('Description', { exact: true })).toBeFocused()
+  await page.getByLabel('Description', { exact: true }).fill('Practical support, with a plan that fits your goals.')
+  await page.getByRole('button', { name: 'Add care focus', exact: true }).click()
+  const count = original[0].focus.length + 1
+  await page.getByLabel(`Care focus ${count}`, { exact: true }).fill('A plan for everyday movement')
+  await page.getByRole('button', { name: `Remove care focus ${count}`, exact: true }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('tab', { name: 'Preview', exact: true }).click()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.evaluate(() => window.scrollTo(0, 0))
+  await page.screenshot({ path: 'test-results/services-editor-mobile.png', fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'Choose a service', exact: false }).click()
+  await page.getByRole('button', { name: `Edit ${original[1].shortTitle}`, exact: true }).click()
+  await expect(page.getByRole('complementary', { name: 'Service library' })).toBeHidden()
+  await page.getByRole('button', { name: 'Save draft', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('Draft saved')
+  await page.reload()
+  await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Care with a personal touch')
+  const saved = (await (await page.request.get('/api/services')).json()).draft.services
+  expect(saved[1].title).toBe('Another private edit')
+})
+
 test('delete service verifies the admin password and preserves other unsaved edits', async ({ page, context }) => {
   await login(page)
   await page.getByRole('link', { name: 'Website content', exact: true }).click()
   const original = (await (await page.request.get('/api/services')).json()).draft.services
   const target = original[1]
   await page.getByLabel('Service title', { exact: true }).fill('Unsaved edit to keep')
-  await page.getByLabel('Select a service').selectOption('1')
+  await page.getByRole('navigation', { name: 'Choose a service' }).getByRole('button').nth(1).click()
   await page.getByRole('button', { name: 'Delete service', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Delete service?', exact: true })
   await expect(dialog).toBeVisible()
@@ -202,8 +259,8 @@ test('delete service verifies the admin password and preserves other unsaved edi
   await dialog.getByRole('button', { name: 'Delete service permanently' }).click()
   await expect(dialog).toHaveCount(0)
   await expect(page.getByRole('status')).toContainText('Service permanently deleted')
-  await expect(page.getByLabel('Select a service').locator('option')).toHaveCount(original.length - 1)
-  await page.getByLabel('Select a service').selectOption('0')
+  await expect(page.getByRole('navigation', { name: 'Choose a service' }).getByRole('button')).toHaveCount(original.length - 1)
+  await page.getByRole('navigation', { name: 'Choose a service' }).getByRole('button').nth(0).click()
   await expect(page.getByLabel('Service title', { exact: true })).toHaveValue('Unsaved edit to keep')
   const stored = (await (await page.request.get('/api/services')).json()).draft.services
   expect(stored).toEqual(original.filter(item => item.id !== target.id))
