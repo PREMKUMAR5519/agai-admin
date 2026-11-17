@@ -8,13 +8,13 @@ import './rich-text.css'
 
 const extensions = [StarterKit.configure({ heading: { levels: [2, 3, 4] }, code: false, codeBlock: false, link: { openOnClick: false, protocols: ['http', 'https', 'mailto'], isAllowedUri: url => safeLink(url) } }), TextAlign.configure({ types: ['heading', 'paragraph'] })]
 
-export default function RichTextEditor({ value, onChange, disabled }) {
+export default function RichTextEditor({ value, onChange, disabled, error, focusRequest }) {
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
   const [linkError, setLinkError] = useState('')
   const editor = useEditor({
     extensions, content: value, immediatelyRender: false,
-    editorProps: { attributes: { role: 'textbox', 'aria-label': 'Blog content', 'aria-multiline': 'true', class: 'rich-text' } },
+    editorProps: { attributes: { id: 'blog-body', role: 'textbox', 'aria-label': 'Blog content', 'aria-multiline': 'true', 'aria-invalid': error ? 'true' : 'false', 'aria-describedby': error ? 'blog-body-error' : 'blog-body-hint', class: 'rich-text' } },
     onUpdate: ({ editor }) => onChange(editor.getJSON()),
   })
   const state = useEditorState({ editor, selector: ({ editor }) => editor ? {
@@ -24,6 +24,11 @@ export default function RichTextEditor({ value, onChange, disabled }) {
     undo: editor.can().undo(), redo: editor.can().redo(),
   } : null }) || { heading: 0, active: {}, align: 'left', undo: false, redo: false }
   useEffect(() => { editor?.setEditable(!disabled, false) }, [editor, disabled])
+  useEffect(() => {
+    if (!editor || !focusRequest) return
+    editor.commands.focus()
+    editor.view.dom.scrollIntoView({ block: 'center' })
+  }, [editor, focusRequest])
   if (!editor) return <p>Loading editor...</p>
   const tool = (label, Icon, action, active = false, unavailable = false) => <button key={label} type="button" title={label} aria-label={label} aria-pressed={active} disabled={disabled || unavailable} onMouseDown={event => event.preventDefault()} onClick={action}><Icon size={18} aria-hidden="true"/></button>
   function applyLink() {
@@ -58,6 +63,7 @@ export default function RichTextEditor({ value, onChange, disabled }) {
       {linkError && <p role="alert">{linkError}</p>}
     </div>}
     <EditorContent editor={editor}/>
-    <div className="rich-editor-hint">Write your blog here. Select text to format it.</div>
+    {error && <p id="blog-body-error" className="blog-field-error">{error}</p>}
+    <div id="blog-body-hint" className="rich-editor-hint">Write your blog here. Select text to format it.</div>
   </div>
 }

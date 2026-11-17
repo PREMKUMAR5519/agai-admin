@@ -51,6 +51,9 @@ test('Turnstile gates login, expires safely and refreshes after a rejected login
 })
 
 test('login stays blocked when configuration or the widget script cannot load', async ({ page }) => {
+  // Start compact so ResizeObserver does not automatically remount/retry the
+  // widget while this test changes the script response from failure to success.
+  await page.setViewportSize({ width: 320, height: 740 })
   let configFails = true
   let scriptFails = true
   await page.route('**/api/auth/config', route => configFails
@@ -74,6 +77,8 @@ test('login stays blocked when configuration or the widget script cannot load', 
   await page.evaluate(() => window.testTurnstileOptions['error-callback']('test-error'))
   await expect(signIn).toBeDisabled()
   await expect(page.getByRole('alert')).toContainText('Security verification failed')
+  await page.setViewportSize({ width: 1280, height: 900 })
+  await expect.poll(() => page.evaluate(() => window.testTurnstileOptions.size)).toBe('flexible')
   await page.setViewportSize({ width: 320, height: 740 })
   await expect.poll(() => page.evaluate(() => window.testTurnstileOptions.size)).toBe('compact')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

@@ -17,6 +17,9 @@
 .service-delete-actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
 .service-delete-confirm{background:#b43232;color:#fff}
 .service-delete-confirm:hover{background:#962626}
+.editor-layout .field .field-error,.blog-field-error{color:#ab3832;font-size:12px;line-height:1.6}
+.editor-layout .field [aria-invalid=true],.rich-editor [aria-invalid=true]{border-color:#bd4940;outline:1px solid #bd4940}
+.blog-field-error{padding:10px 18px}
 .login-verification{margin:20px 0 12px;min-width:0;font-size:11px;color:#617482}
 .login-verification>div{min-height:65px}
 .login-verification p{margin-top:8px;line-height:1.6}
