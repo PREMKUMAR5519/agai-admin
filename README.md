@@ -31,6 +31,8 @@ The initial import includes the six articles and all current clinic/services con
 
 ## Public website connection
 
+Contact enquiries also support Gmail notifications from and to **agaiphysiorehab@gmail.com**. Set the server-only `GMAIL_APP_PASSWORD`, then restart or redeploy the admin backend. Delivery status and a retry action appear in each enquiry's details. See [contact email setup](CONTACT_EMAIL.md) for production configuration and failure handling.
+
 The sibling `../agai` website is connected but remains a separate project. `GET /api/public/content` exposes only published content; no credentials, drafts or administrator records. Public reads support CORS without cookies. Admin endpoints are authenticated and served on the same origin as the editor.
 
 The website loads published content before importing page components. If the CMS is unavailable after four seconds, it uses `src/cms-snapshot.json`, the backup included in its build. When fresh content differs from prerendered markup, it renders fresh content instead of hydrating mismatched HTML.

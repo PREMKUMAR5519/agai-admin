@@ -58,7 +58,7 @@ before(async () => {
   ;({ client, db } = await connectDatabase(databaseName))
   await db.collection('users').insertOne({ email: 'test@example.com', name: 'Test editor', passwordHash: await hashPassword(password), authVersion: 1 })
   await db.collection('content').insertOne({ _id: 'main', draft: seed.content, published: seed.content, revision: 0, publishedRevision: 0, publishedAt: new Date() })
-  app = createApp({ db, client, sessionStore: new session.MemoryStore() })
+  app = createApp({ db, client, sessionStore: new session.MemoryStore(), contactMailer: { configured: false } })
   agent = request.agent(app)
 })
 after(async () => {

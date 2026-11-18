@@ -1,4 +1,6 @@
 import { publicContact, privateContact } from './contact.js'
+import { createContactMailer } from './contact-mail.js'
+import { createContactNotifications } from './contact-notifications.js'
 import express from 'express'
 import helmet from 'helmet'
 import session from 'express-session'
@@ -28,8 +30,9 @@ const revision = req => {
 }
 const saveSession = req => new Promise((resolve, reject) => req.session.save(error => error ? reject(error) : resolve()))
 
-export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
+export function createApp({ db, client, sessionStore, turnstileFetch, contactMailer } = {}) {
   const app = express()
+  const contactNotifications = createContactNotifications({ db, mailer: contactMailer || createContactMailer({ appPassword: config.gmailAppPassword, adminUrl: config.adminOrigin }) })
   if (config.vercel || process.env.TRUST_PROXY === '1') app.set('trust proxy', 1)
   app.disable('x-powered-by')
   app.use(helmet({
@@ -48,7 +51,7 @@ export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
     res.setHeader('Cache-Control', 'no-store')
     next()
   })
-  publicContact(app, db)
+  publicContact(app, db, contactNotifications)
   app.get('/api/public/services', async (_req, res) => {
     const content = await db.collection('content').findOne({ _id: 'main' }, { projection: { 'published.services': 1, publishedAt: 1 } })
     if (!content?.published?.services) throw fail(503, 'Services have not been initialized. Run npm run setup.')
@@ -107,7 +110,7 @@ export function createApp({ db, client, sessionStore, turnstileFetch } = {}) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.get('X-CSRF-Token') !== req.session.csrf) return next(fail(403, 'Your security token expired. Refresh the page and try again.'))
     next()
   })
-  privateContact(app, db)
+  privateContact(app, db, contactNotifications)
   app.get('/api/auth/me', (req, res) => res.json({ user: { name: req.user.name, email: req.user.email }, csrf: req.session.csrf }))
   app.post('/api/auth/logout', (req, res, next) => req.session.destroy(error => {
     if (error) return next(error)

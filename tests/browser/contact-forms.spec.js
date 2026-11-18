@@ -15,7 +15,7 @@ test('website enquiries persist and are visible only in the admin inbox', async 
   await website.unroute('**/api/public/contact')
   await website.getByRole('button', { name: 'Submit enquiry' }).click()
   await expect(website.getByRole('heading', { name: 'Enquiry received.' })).toBeVisible()
-  await expect(website.getByLabel('Your name')).toHaveValue('')
+  await expect(website.getByLabel('Your name')).toHaveCount(0)
   expect((await request.get('/api/contact-submissions')).status()).toBe(401)
   await page.goto('/contact-forms')
   await page.getByLabel('Email address').fill('editor@example.com')
@@ -27,6 +27,9 @@ test('website enquiries persist and are visible only in the admin inbox', async 
   const dialog = page.getByRole('dialog')
   await expect(dialog.locator('.contact-message')).toContainText('<script>unsafe</script>')
   await expect(dialog.getByRole('link', { name: 'visitor@example.com' })).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Email notification' })).toBeVisible()
+  await expect(dialog.getByRole('status')).toHaveText('Not configured')
+  await expect(dialog.getByRole('button', { name: 'Retry email notification' })).toBeDisabled()
   await page.keyboard.press('Escape')
   await expect(dialog).toHaveCount(0)
   await expect(entry.getByRole('button')).toBeFocused()
@@ -51,4 +54,29 @@ test('website enquiries persist and are visible only in the admin inbox', async 
   await page.screenshot({ path: 'test-results/contact-inbox-mobile.png', fullPage: true })
   await dialog.getByRole('button', { name: 'Close enquiry', exact: true }).click()
   await expect(dialog).toHaveCount(0)
+})
+
+test('admin can retry an email failure and sees Gmail acceptance', async ({ page }) => {
+  const id = '77e8e546-f561-4c92-9472-3ce1bb19db41'
+  let status = 'failed', attempts = 1, retries = 0
+  await page.route('**/api/contact-submissions?*', route => route.fulfill({ json: { items: [{ _id: id, name: 'Mail Retry Test', phone: '+91 98765 43210', email: '', service: 'General enquiry', message: 'Test enquiry for checking the admin retry action.', createdAt: new Date().toISOString(), emailNotification: { status, attempts, errorCode: status === 'failed' ? 'ETIMEDOUT' : undefined } }], total: 1, page: 1, pageSize: 20, emailConfigured: true } }))
+  await page.route(`**/api/contact-submissions/${id}/notification`, async route => {
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().headers()['x-csrf-token']).toBeTruthy()
+    retries++
+    status = 'sent'
+    attempts++
+    await route.fulfill({ json: { notification: { status, attempts, sentAt: new Date().toISOString() } } })
+  })
+  await page.goto('/contact-forms')
+  await page.getByLabel('Email address').fill('editor@example.com')
+  await page.getByLabel('Password', { exact: true }).fill('Browser-test-password-2026!')
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await page.getByRole('button', { name: 'View enquiry from Mail Retry Test' }).click()
+  const dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('status')).toHaveText('Needs retry')
+  await dialog.getByRole('button', { name: 'Retry email notification' }).click()
+  await expect(dialog.getByRole('status')).toContainText('Accepted by Gmail')
+  await expect(dialog.getByRole('button', { name: 'Retry email notification' })).toHaveCount(0)
+  expect(retries).toBe(1)
 })

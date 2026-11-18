@@ -26,5 +26,6 @@ export const config = {
   publicUrl,
   vercel: process.env.VERCEL === '1',
   websiteUrl: process.env.WEBSITE_URL || 'https://agaiphysiotherapy.com',
+  gmailAppPassword: process.env.GMAIL_APP_PASSWORD || '',
   uploads: resolve(root, 'uploads'),
 }

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { config } from './config.js'
 import { loginLimit } from './login-limit.js'
+import { notificationSummary } from './contact-notifications.js'
 
 const schema = z.object({
   submissionId: z.string().uuid(),
@@ -12,7 +13,7 @@ const schema = z.object({
   website: z.string().max(200).default(''),
 })
 
-export function publicContact(app, db) {
+export function publicContact(app, db, notifications) {
   const origins = new Set([new URL(config.websiteUrl).origin, new URL(config.publicUrl).origin])
   // Support the canonical website and its www alias.
   const website = new URL(config.websiteUrl)
@@ -36,13 +37,24 @@ export function publicContact(app, db) {
     if (website) return res.status(400).json({ message: 'Unable to submit this enquiry.' })
     // A retry after a lost response must not create a second enquiry.
     try {
-      await db.collection('contactSubmissions').updateOne({ _id: submissionId }, { $setOnInsert: { ...input, createdAt: new Date() } }, { upsert: true })
+      await db.collection('contactSubmissions').updateOne({ _id: submissionId }, { $setOnInsert: { ...input, createdAt: new Date(), emailNotification: { status: 'pending', attempts: 0 } } }, { upsert: true })
     } catch (error) { if (error.code !== 11000) throw error }
+    // Await the bounded mail attempt so Vercel cannot freeze it after the response.
+    // The saved enquiry remains successful even when email or status tracking fails.
+    await notifications.send(submissionId).catch(() => console.error('Contact email status could not be updated. Check the admin inbox.'))
     res.status(201).json({ ok: true, reference: submissionId })
   })
 }
 
-export function privateContact(app, db) {
+export function privateContact(app, db, notifications) {
+  app.post('/api/contact-submissions/:id/notification', loginLimit(db, { scope: 'contact-email', message: 'Too many email attempts. Please try again later.' }), async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id)
+    const item = await db.collection('contactSubmissions').findOne({ _id: id })
+    if (!item) return res.status(404).json({ message: 'Enquiry not found' })
+    if (!item.emailNotification) return res.status(409).json({ message: 'Email notifications were not enabled for this earlier enquiry.' })
+    const notification = await notifications.send(id)
+    res.json({ notification })
+  })
   app.get('/api/contact-submissions', async (req, res) => {
     const page = z.coerce.number().int().min(1).max(100000).parse(req.query.page || 1)
     const search = z.string().trim().max(200).parse(req.query.search ?? '')
@@ -58,6 +70,6 @@ export function privateContact(app, db) {
       db.collection('contactSubmissions').find(filter).sort({ createdAt: -1, _id: -1 }).skip((page - 1) * pageSize).limit(pageSize).toArray(),
       db.collection('contactSubmissions').countDocuments(filter),
     ])
-    res.json({ items, total, page, pageSize })
+    res.json({ items: items.map(item => ({ ...item, emailNotification: notificationSummary(item.emailNotification) })), total, page, pageSize, emailConfigured: notifications.configured })
   })
 }
