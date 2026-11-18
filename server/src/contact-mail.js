@@ -7,16 +7,17 @@ const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '
 export function contactMessage(enquiry, adminUrl) {
   const received = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(new Date(enquiry.createdAt))
   const inbox = new URL('/contact-forms', adminUrl).href
-  const rows = [['Name', enquiry.name], ['Phone', enquiry.phone], ['Email', enquiry.email || 'Not provided'], ['Service', enquiry.service], ['Received (IST)', received], ['Reference', enquiry._id]]
+  const title = `${String(enquiry.name || 'Visitor').replace(/[\r\n]+/g, ' ').trim()} Raised query`
+  const rows = [['Name', enquiry.name], ['Phone', enquiry.phone], ['Email', enquiry.email || 'Not provided'], ['Service', enquiry.service], ['Received (IST)', received]]
   return {
-    from: { name: 'AGAI Website', address: CONTACT_MAILBOX },
+    from: { name: 'AGAI', address: CONTACT_MAILBOX },
     to: CONTACT_MAILBOX,
     // Do not automatically email the visitor or use their address as the sender.
     ...(enquiry.email ? { replyTo: { address: enquiry.email } } : {}),
-    subject: `New website enquiry · ${enquiry._id}`,
+    subject: title,
     messageId: `<contact-${enquiry._id}@agaiphysiotherapy.com>`,
-    text: `A new contact enquiry was received on the AGAI website.\n\n${rows.map(([label, value]) => `${label}: ${value}`).join('\n')}\n\nMessage:\n${enquiry.message}\n\nOpen the admin inbox: ${inbox}\n\nThis is an enquiry notification, not a confirmed appointment.`,
-    html: `<div style="font-family:Arial,sans-serif;color:#143b63;line-height:1.6;max-width:620px"><h1 style="font-size:24px;color:#0558ad">New website enquiry</h1><p>A visitor has sent an enquiry to AGAI Physiotherapy Centre.</p><table style="border-collapse:collapse">${rows.map(([label, value]) => `<tr><th style="text-align:left;vertical-align:top;padding:6px 20px 6px 0">${label}</th><td style="padding:6px 0;overflow-wrap:anywhere">${escapeHtml(value)}</td></tr>`).join('')}</table><h2 style="font-size:18px">Message</h2><p style="white-space:pre-wrap">${escapeHtml(enquiry.message)}</p><p><a href="${escapeHtml(inbox)}">Open the admin inbox</a></p><p style="font-size:12px;color:#526b82">This is an enquiry notification, not a confirmed appointment.</p></div>`,
+    text: `${title}\n\n${rows.map(([label, value]) => `${label}: ${value}`).join('\n')}\n\nMessage:\n${enquiry.message}\n\nOpen the admin inbox: ${inbox}\n\nThis is an enquiry notification, not a confirmed appointment.`,
+    html: `<div aria-hidden="true" style="display:none;max-height:0;overflow:hidden;mso-hide:all">${'&#847; &zwnj; &nbsp; '.repeat(100)}</div><div style="font-family:Arial,sans-serif;color:#143b63;line-height:1.6;max-width:620px"><h1 style="font-size:24px;color:#0558ad">${escapeHtml(title)}</h1><table style="border-collapse:collapse">${rows.map(([label, value]) => `<tr><th style="text-align:left;vertical-align:top;padding:6px 20px 6px 0">${label}</th><td style="padding:6px 0;overflow-wrap:anywhere">${escapeHtml(value)}</td></tr>`).join('')}</table><h2 style="font-size:18px">Message</h2><p style="white-space:pre-wrap">${escapeHtml(enquiry.message)}</p><p><a href="${escapeHtml(inbox)}">Open the admin inbox</a></p><p style="font-size:12px;color:#526b82">This is an enquiry notification, not a confirmed appointment.</p></div>`,
     disableFileAccess: true,
     disableUrlAccess: true,
   }
